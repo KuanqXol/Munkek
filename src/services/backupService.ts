@@ -1,6 +1,8 @@
-import { Order, OrdersDocument, ORDER_STATUS_LABELS } from '../models/Order';
+import { Order, ORDER_STATUS_LABELS, DISCOUNT_TYPE_LABELS } from '../models/Order';
+import { Product, PRODUCT_TYPE_LABELS } from '../models/Product';
 import { orderService } from './orderService';
-import { storageService, isTauriEnvironment } from './storageService';
+import { productService } from './productService';
+import { isTauriEnvironment } from './storageService';
 import { getTodayString, formatDate } from '../utils/formatters';
 
 export interface BackupResult {
@@ -23,7 +25,6 @@ class BackupService {
   private escapeCsvCell(value: string | number | undefined | null): string {
     if (value === null || value === undefined) return '""';
     const str = String(value);
-    // If contains quote, comma, or newline, escape quotes and wrap in quotes
     if (str.includes('"') || str.includes(',') || str.includes('\n') || str.includes('\r')) {
       return `"${str.replace(/"/g, '""')}"`;
     }
@@ -31,43 +32,57 @@ class BackupService {
   }
 
   /**
-   * Generate CSV content with UTF-8 BOM for Microsoft Excel compatibility
+   * Generate CSV content for Orders with UTF-8 BOM for Microsoft Excel compatibility
    */
-  public generateCsvContent(orders: Order[]): string {
+  public generateOrdersCsvContent(orders: Order[]): string {
     const headers = [
       'Mã đơn',
       'Tên khách hàng',
       'Số điện thoại',
-      'Tên bánh',
-      'Số lượng',
-      'Đơn giá (VNĐ)',
-      'Thành tiền (VNĐ)',
+      'Địa chỉ giao',
+      'Chi tiết bánh đã đặt',
+      'Tổng số lượng bánh',
+      'Tạm tính (VNĐ)',
+      'Loại giảm giá',
+      'Tiền giảm giá (VNĐ)',
+      'Lý do giảm giá',
+      'Tổng thanh toán (VNĐ)',
       'Tiền cọc (VNĐ)',
-      'Còn lại phải thu (VNĐ)',
-      'Ngày đặt',
-      'Ngày giao',
+      'Còn nợ phải thu (VNĐ)',
+      'Ngày nhận đơn',
+      'Ngày hẹn giao',
       'Trạng thái',
       'Ghi chú',
       'Ngày tạo',
     ];
 
     const rows = orders.map((order) => {
-      const remaining = Math.max(0, order.total - (order.deposit || 0));
+      const items = order.items || [];
+      const totalQty = items.reduce((sum, it) => sum + (it.quantity || 1), 0);
+      const itemsDetail = items.map((it) => `${it.quantity}x ${it.productName}`).join('; ');
+      const remaining = order.remaining !== undefined ? order.remaining : Math.max(0, order.total - (order.deposit || 0));
       const statusText = ORDER_STATUS_LABELS[order.status] || order.status;
+      const discountTypeText = order.discountType ? DISCOUNT_TYPE_LABELS[order.discountType] || order.discountType : 'Không';
+      const discountAmount = Math.max(0, (order.subtotal || order.total) - order.total);
+
       return [
         this.escapeCsvCell(order.id),
-        this.escapeCsvCell(order.customerName),
-        this.escapeCsvCell(order.phone),
-        this.escapeCsvCell(order.productName),
-        order.quantity,
-        order.unitPrice,
+        this.escapeCsvCell(order.customer?.name || ''),
+        this.escapeCsvCell(order.customer?.phone || ''),
+        this.escapeCsvCell(order.customer?.address || ''),
+        this.escapeCsvCell(itemsDetail),
+        totalQty,
+        order.subtotal || order.total,
+        this.escapeCsvCell(discountTypeText),
+        discountAmount,
+        this.escapeCsvCell(order.discountNote || ''),
         order.total,
         order.deposit || 0,
         remaining,
         this.escapeCsvCell(formatDate(order.orderDate)),
         this.escapeCsvCell(formatDate(order.deliveryDate)),
         this.escapeCsvCell(statusText),
-        this.escapeCsvCell(order.note),
+        this.escapeCsvCell(order.note || ''),
         this.escapeCsvCell(order.createdAt),
       ].join(',');
     });
@@ -89,8 +104,8 @@ class BackupService {
         };
       }
 
-      const csvContent = this.generateCsvContent(orders);
-      const defaultFilename = `orders_${getTodayString()}.csv`;
+      const csvContent = this.generateOrdersCsvContent(orders);
+      const defaultFilename = `don_hang_banh_${getTodayString()}.csv`;
 
       if (isTauriEnvironment()) {
         const { save } = await import('@tauri-apps/plugin-dialog');
@@ -145,34 +160,117 @@ class BackupService {
   }
 
   /**
-   * Backup all orders to a standalone JSON file
+   * Generate CSV for Products
    */
-  public async backupJson(): Promise<BackupResult> {
-    try {
-      const orders = await orderService.getAllOrders();
-      const backupDoc: OrdersDocument = {
-        schemaVersion: 1,
-        appName: 'MunKek',
-        updatedAt: new Date().toISOString(),
-        orders,
-      };
+  public generateProductsCsvContent(products: Product[]): string {
+    const headers = [
+      'Mã bánh',
+      'Tên bánh',
+      'Phân loại',
+      'Trọng lượng (g)',
+      'Số trứng',
+      'Đơn giá niêm yết (VNĐ)',
+      'Giá vốn (VNĐ)',
+      'Tình trạng',
+      'Mô tả',
+    ];
 
-      const jsonContent = JSON.stringify(backupDoc, null, 2);
-      const defaultFilename = `cake-orders-backup-${getTodayString()}.json`;
+    const rows = products.map((p) => {
+      const typeLabel = PRODUCT_TYPE_LABELS[p.type] || p.type;
+      const statusText = p.isAvailable ? 'Còn làm' : 'Tạm hết';
+
+      return [
+        this.escapeCsvCell(p.id),
+        this.escapeCsvCell(p.name),
+        this.escapeCsvCell(typeLabel),
+        p.weight,
+        p.eggCount,
+        p.unitPrice,
+        p.costPrice || '',
+        this.escapeCsvCell(statusText),
+        this.escapeCsvCell(p.description || ''),
+      ].join(',');
+    });
+
+    return '\uFEFF' + [headers.map((h) => `"${h}"`).join(','), ...rows].join('\r\n');
+  }
+
+  /**
+   * Export all products to CSV
+   */
+  public async exportProductsCsv(): Promise<BackupResult> {
+    try {
+      const products = await productService.getAllProducts();
+      if (products.length === 0) {
+        return {
+          success: false,
+          message: 'Không có sản phẩm nào trong menu để xuất file CSV.',
+        };
+      }
+
+      const csvContent = this.generateProductsCsvContent(products);
+      const defaultFilename = `menu_banh_trung_thu_${getTodayString()}.csv`;
 
       if (isTauriEnvironment()) {
         const { save } = await import('@tauri-apps/plugin-dialog');
         const { writeTextFile } = await import('@tauri-apps/plugin-fs');
 
         const selectedPath = await save({
-          title: 'Lưu file sao lưu dữ liệu JSON',
+          title: 'Lưu bảng giá menu bánh CSV',
           defaultPath: defaultFilename,
-          filters: [
-            {
-              name: 'MunKek Backup JSON',
-              extensions: ['json'],
-            },
-          ],
+          filters: [{ name: 'File CSV', extensions: ['csv'] }],
+        });
+
+        if (!selectedPath) return { success: false, message: 'Đã hủy thao tác.' };
+        await writeTextFile(selectedPath, csvContent);
+        return {
+          success: true,
+          message: `Đã xuất ${products.length} sản phẩm ra file CSV.`,
+          filePath: selectedPath,
+        };
+      } else {
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = defaultFilename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        return { success: true, message: `Đã tải xuống file CSV menu bánh.` };
+      }
+    } catch (err) {
+      return { success: false, message: `Lỗi xuất CSV menu: ${err}` };
+    }
+  }
+
+  /**
+   * Backup all orders to a standalone JSON file
+   */
+  public async backupJson(): Promise<BackupResult> {
+    try {
+      const orders = await orderService.getAllOrders();
+      const defaultFilename = `munkek-backup-${getTodayString()}.json`;
+      const jsonContent = JSON.stringify(
+        {
+          schemaVersion: 1,
+          appName: 'MunKek - Tiệm Bánh Trung Thu',
+          exportDate: new Date().toISOString(),
+          orders,
+        },
+        null,
+        2
+      );
+
+      if (isTauriEnvironment()) {
+        const { save } = await import('@tauri-apps/plugin-dialog');
+        const { writeTextFile } = await import('@tauri-apps/plugin-fs');
+
+        const selectedPath = await save({
+          title: 'Lưu file sao lưu MunKek (JSON)',
+          defaultPath: defaultFilename,
+          filters: [{ name: 'File JSON', extensions: ['json'] }],
         });
 
         if (!selectedPath) {
@@ -182,12 +280,11 @@ class BackupService {
         await writeTextFile(selectedPath, jsonContent);
         return {
           success: true,
-          message: `Đã sao lưu thành công ${orders.length} đơn hàng!`,
+          message: `Đã tạo bản sao lưu thành công chứa ${orders.length} đơn hàng.`,
           filePath: selectedPath,
         };
       } else {
-        // Browser download fallback
-        const blob = new Blob([jsonContent], { type: 'application/json;charset=utf-8;' });
+        const blob = new Blob([jsonContent], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
@@ -204,7 +301,6 @@ class BackupService {
         };
       }
     } catch (err) {
-      console.error('Lỗi khi sao lưu JSON:', err);
       return {
         success: false,
         message: `Sao lưu thất bại: ${err instanceof Error ? err.message : String(err)}`,
@@ -213,74 +309,96 @@ class BackupService {
   }
 
   /**
-   * Validate raw JSON structure before restoring
+   * Validate and parse backup JSON content (supports both new multi-item and legacy single-item formats)
    */
   public validateBackupContent(rawJson: string): ValidationBackupResult {
     try {
-      if (!rawJson || !rawJson.trim()) {
-        return { isValid: false, orders: [], error: 'File sao lưu trống, không có nội dung.' };
-      }
-
       const parsed = JSON.parse(rawJson);
-      let rawOrders: unknown[] = [];
+      let candidateOrders: unknown[] = [];
 
       if (Array.isArray(parsed)) {
-        rawOrders = parsed;
-      } else if (parsed && typeof parsed === 'object' && Array.isArray((parsed as Record<string, unknown>).orders)) {
-        rawOrders = (parsed as Record<string, unknown>).orders as unknown[];
+        candidateOrders = parsed;
+      } else if (parsed && typeof parsed === 'object' && Array.isArray(parsed.orders)) {
+        candidateOrders = parsed.orders;
       } else {
         return {
           isValid: false,
           orders: [],
-          error: 'Cấu trúc file không hợp lệ (không tìm thấy danh sách đơn hàng).',
+          error: 'File sao lưu không đúng định dạng của MunKek (không tìm thấy danh sách đơn hàng).',
         };
       }
 
       const validOrders: Order[] = [];
-      for (let i = 0; i < rawOrders.length; i++) {
-        const item = rawOrders[i] as Record<string, unknown>;
+
+      for (let i = 0; i < candidateOrders.length; i++) {
+        const item = candidateOrders[i] as Record<string, unknown>;
+
         if (!item || typeof item !== 'object') {
           return {
             isValid: false,
             orders: [],
-            error: `Đơn hàng ở vị trí #${i + 1} không phải là đối tượng hợp lệ.`,
+            error: `Dòng thứ ${i + 1} không phải là đối tượng đơn hàng hợp lệ.`,
           };
         }
 
-        // Validate essential fields
-        if (!item.id || typeof item.id !== 'string') {
-          return {
-            isValid: false,
-            orders: [],
-            error: `Đơn hàng ở vị trí #${i + 1} thiếu mã đơn (id).`,
-          };
+        const id = String(item.id || `ORD-${String(i + 1).padStart(4, '0')}`);
+
+        // Handle customer info: support object or legacy customerName string
+        const customer = item.customer && typeof item.customer === 'object'
+          ? {
+              name: String((item.customer as Record<string, unknown>).name || 'Khách vãng lai'),
+              phone: String((item.customer as Record<string, unknown>).phone || ''),
+              address: String((item.customer as Record<string, unknown>).address || ''),
+            }
+          : {
+              name: String(item.customerName || 'Khách vãng lai'),
+              phone: String(item.phone || ''),
+              address: '',
+            };
+
+        // Handle items: support array or legacy productName
+        let items = Array.isArray(item.items)
+          ? item.items.map((it: Record<string, unknown>) => ({
+              productId: String(it.productId || 'BTT-01'),
+              productName: String(it.productName || 'Bánh Trung Thu'),
+              quantity: Math.max(1, Number(it.quantity) || 1),
+              originalPrice: Math.max(0, Number(it.originalPrice ?? it.unitPrice) || 0),
+              customPrice: it.customPrice !== undefined ? Math.max(0, Number(it.customPrice)) : undefined,
+            }))
+          : [];
+
+        if (items.length === 0 && item.productName) {
+          items = [
+            {
+              productId: 'BTT-01',
+              productName: String(item.productName),
+              quantity: Math.max(1, Number(item.quantity) || 1),
+              originalPrice: Math.max(0, Number(item.unitPrice) || 0),
+              customPrice: undefined,
+            },
+          ];
         }
-        if (!item.customerName || typeof item.customerName !== 'string') {
-          return {
-            isValid: false,
-            orders: [],
-            error: `Đơn hàng mã ${item.id} thiếu tên khách hàng.`,
-          };
-        }
-        if (!item.productName || typeof item.productName !== 'string') {
-          return {
-            isValid: false,
-            orders: [],
-            error: `Đơn hàng mã ${item.id} thiếu tên bánh.`,
-          };
-        }
+
+        const subtotal = Number(item.subtotal) || items.reduce((sum, it) => sum + it.quantity * (it.customPrice ?? it.originalPrice), 0);
+        const total = Number(item.total) || subtotal;
+        const deposit = Math.max(0, Number(item.deposit) || 0);
+        const remaining = Math.max(0, total - deposit);
 
         const validOrder: Order = {
-          id: String(item.id),
-          customerName: String(item.customerName),
-          phone: String(item.phone || ''),
-          productName: String(item.productName),
-          quantity: Math.max(1, Number(item.quantity) || 1),
-          unitPrice: Math.max(0, Number(item.unitPrice) || 0),
-          total: Number(item.total) || Math.max(1, Number(item.quantity) || 1) * Math.max(0, Number(item.unitPrice) || 0),
-          deposit: Math.max(0, Number(item.deposit) || 0),
+          id,
+          customer,
+          items,
           orderDate: String(item.orderDate || getTodayString()),
           deliveryDate: String(item.deliveryDate || getTodayString()),
+          subtotal,
+          discountType: (['none', 'amount', 'percent', 'override'].includes(String(item.discountType))
+            ? item.discountType
+            : 'none') as Order['discountType'],
+          discountValue: Number(item.discountValue) || 0,
+          discountNote: String(item.discountNote || ''),
+          total,
+          deposit,
+          remaining,
           status: (['pending', 'preparing', 'completed', 'cancelled'].includes(String(item.status))
             ? item.status
             : 'pending') as Order['status'],
@@ -306,31 +424,6 @@ class BackupService {
   }
 
   /**
-   * Create an automatic safety backup of current data on disk before restoring
-   */
-  private async createSafetyPreRestoreBackup(): Promise<string | null> {
-    try {
-      const currentDoc = storageService.getCachedDocument();
-      if (!currentDoc || currentDoc.orders.length === 0) return null;
-
-      if (isTauriEnvironment()) {
-        const { appDataDir, join } = await import('@tauri-apps/api/path');
-        const { writeTextFile } = await import('@tauri-apps/plugin-fs');
-        const baseDir = await appDataDir();
-        const backupPath = await join(
-          baseDir,
-          `orders.auto-backup-before-restore-${Date.now()}.json`
-        );
-        await writeTextFile(backupPath, JSON.stringify(currentDoc, null, 2));
-        return backupPath;
-      }
-    } catch (err) {
-      console.warn('Không thể tạo file auto-backup trước khi restore:', err);
-    }
-    return null;
-  }
-
-  /**
    * Restore from raw JSON string with full validation and auto safety backup
    */
   public async restoreFromJsonContent(rawJson: string): Promise<BackupResult> {
@@ -338,51 +431,39 @@ class BackupService {
     if (!validation.isValid) {
       return {
         success: false,
-        message: validation.error || 'Dữ liệu file phục hồi không hợp lệ.',
+        message: validation.error || 'Dữ liệu file sao lưu không hợp lệ.',
       };
     }
 
-    // Create safety backup of current data first
-    const safetyFile = await this.createSafetyPreRestoreBackup();
-
     try {
+      // Replace all orders
       await orderService.replaceAllOrders(validation.orders);
-      let msg = `Phục hồi dữ liệu thành công! Đã nạp ${validation.orders.length} đơn hàng.`;
-      if (safetyFile) {
-        msg += ` (Bản sao lưu an toàn trước đó đã được lưu tự động tại AppData).`;
-      }
+
       return {
         success: true,
-        message: msg,
+        message: `Phục hồi thành công ${validation.orders.length} đơn hàng từ file sao lưu!`,
         count: validation.orders.length,
       };
     } catch (err) {
-      console.error('Lỗi khi ghi đè dữ liệu restore:', err);
       return {
         success: false,
-        message: `Phục hồi thất bại: ${err instanceof Error ? err.message : String(err)}`,
+        message: `Lỗi ghi dữ liệu: ${err instanceof Error ? err.message : String(err)}`,
       };
     }
   }
 
   /**
-   * Pick and restore JSON backup file (handles both Tauri dialog and browser)
+   * Pick file and restore JSON
    */
   public async pickAndRestoreJson(): Promise<BackupResult> {
-    if (isTauriEnvironment()) {
-      try {
+    try {
+      if (isTauriEnvironment()) {
         const { open } = await import('@tauri-apps/plugin-dialog');
         const { readTextFile } = await import('@tauri-apps/plugin-fs');
 
         const selected = await open({
-          title: 'Chọn file sao lưu MunKek (.json)',
           multiple: false,
-          filters: [
-            {
-              name: 'MunKek Backup JSON',
-              extensions: ['json'],
-            },
-          ],
+          filters: [{ name: 'File sao lưu MunKek', extensions: ['json'] }],
         });
 
         if (!selected || typeof selected !== 'string') {
@@ -391,37 +472,37 @@ class BackupService {
 
         const content = await readTextFile(selected);
         return await this.restoreFromJsonContent(content);
-      } catch (err) {
-        return {
-          success: false,
-          message: `Không thể đọc file: ${err instanceof Error ? err.message : String(err)}`,
-        };
+      } else {
+        // Browser file picker fallback
+        return new Promise((resolve) => {
+          const input = document.createElement('input');
+          input.type = 'file';
+          input.accept = '.json,application/json';
+          input.onchange = async () => {
+            const file = input.files?.[0];
+            if (!file) {
+              resolve({ success: false, message: 'Chưa chọn file sao lưu.' });
+              return;
+            }
+            const reader = new FileReader();
+            reader.onload = async (e) => {
+              const text = e.target?.result as string;
+              const result = await this.restoreFromJsonContent(text);
+              resolve(result);
+            };
+            reader.onerror = () => {
+              resolve({ success: false, message: 'Không thể đọc file đã chọn.' });
+            };
+            reader.readAsText(file);
+          };
+          input.click();
+        });
       }
-    } else {
-      // In browser mode: return instructions or use input element trigger in UI
-      return new Promise((resolve) => {
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.accept = '.json';
-        input.onchange = async () => {
-          const file = input.files?.[0];
-          if (!file) {
-            resolve({ success: false, message: 'Đã hủy chọn file.' });
-            return;
-          }
-          const reader = new FileReader();
-          reader.onload = async (e) => {
-            const content = e.target?.result as string;
-            const res = await this.restoreFromJsonContent(content);
-            resolve(res);
-          };
-          reader.onerror = () => {
-            resolve({ success: false, message: 'Lỗi khi đọc file phục hồi từ trình duyệt.' });
-          };
-          reader.readAsText(file);
-        };
-        input.click();
-      });
+    } catch (err) {
+      return {
+        success: false,
+        message: `Phục hồi thất bại: ${err instanceof Error ? err.message : String(err)}`,
+      };
     }
   }
 }

@@ -1,13 +1,16 @@
 import './styles/main.css';
+import { storageService } from './services/storageService';
+import { productService } from './services/productService';
 import { orderService } from './services/orderService';
 import { updateService } from './services/updateService';
 import { showUpdateDialog } from './components/UpdateDialog';
 import { DashboardPage } from './pages/DashboardPage';
 import { OrdersPage } from './pages/OrdersPage';
+import { ProductsPage } from './pages/ProductsPage';
 import { OrderFormPage } from './pages/OrderFormPage';
 import { SettingsPage } from './pages/SettingsPage';
 
-type PageId = 'dashboard' | 'orders' | 'add-order' | 'edit-order' | 'settings';
+export type PageId = 'dashboard' | 'orders' | 'products' | 'add-order' | 'edit-order' | 'settings';
 
 class MunKekApp {
   private currentPage: PageId = 'dashboard';
@@ -22,16 +25,20 @@ class MunKekApp {
 
   public async start(): Promise<void> {
     try {
-      // 1. Initialize data from storage
+      // 1. Initialize root config and storage
+      await storageService.init();
+
+      // 2. Initialize products and orders
+      await productService.init();
       await orderService.init();
 
-      // 2. Render main application shell
+      // 3. Render main application shell
       this.renderAppShell();
 
-      // 3. Render active page
+      // 4. Render active page
       await this.navigateTo(this.currentPage);
 
-      // 4. Perform silent background update check (never blocks UI or crashes offline)
+      // 5. Perform silent background update check (never blocks UI or crashes offline)
       this.checkUpdatesSilently();
     } catch (err) {
       console.error('Lỗi khi khởi chạy ứng dụng MunKek:', err);
@@ -44,10 +51,10 @@ class MunKekApp {
       <!-- Sidebar -->
       <aside class="sidebar">
         <div class="sidebar-header">
-          <div class="brand-icon">🍰</div>
+          <div class="brand-icon">🥮</div>
           <div class="brand-text">
             <h1>MunKek</h1>
-            <p>Quản lý Đơn Bánh Ngọt</p>
+            <p>Tiệm Bánh Trung Thu</p>
           </div>
         </div>
 
@@ -57,8 +64,12 @@ class MunKekApp {
             <span>Tổng quan</span>
           </button>
           <button class="nav-item ${this.currentPage === 'orders' ? 'active' : ''}" data-page="orders">
-            <span class="nav-icon">🎂</span>
+            <span class="nav-icon">📋</span>
             <span>Đơn hàng</span>
+          </button>
+          <button class="nav-item ${this.currentPage === 'products' ? 'active' : ''}" data-page="products">
+            <span class="nav-icon">🥮</span>
+            <span>Bánh Trung Thu</span>
           </button>
           <button class="nav-item ${this.currentPage === 'add-order' ? 'active' : ''}" data-page="add-order">
             <span class="nav-icon">➕</span>
@@ -128,8 +139,9 @@ class MunKekApp {
     // Update Top bar title
     const titleEl = document.getElementById('app-top-title');
     const pageTitles: Record<PageId, string> = {
-      dashboard: 'Tổng quan tiệm bánh',
+      dashboard: 'Tổng quan mùa Bánh Trung Thu',
       orders: 'Danh sách đơn hàng',
+      products: 'Danh mục Bánh Trung Thu',
       'add-order': 'Thêm đơn hàng mới',
       'edit-order': 'Chỉnh sửa đơn hàng',
       settings: 'Dữ liệu & Cài đặt',
@@ -151,6 +163,11 @@ class MunKekApp {
       case 'orders': {
         const orders = new OrdersPage(viewport, (p, arg) => this.navigateTo(p as PageId, arg));
         await orders.render();
+        break;
+      }
+      case 'products': {
+        const products = new ProductsPage(viewport, (p, arg) => this.navigateTo(p as PageId, arg));
+        await products.render();
         break;
       }
       case 'add-order': {

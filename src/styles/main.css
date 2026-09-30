@@ -503,6 +503,63 @@ body {
   border-color: var(--status-cancelled-border);
 }
 
+/* Product Type Badges */
+.badge-baked {
+  background-color: #ffedd5;
+  color: #9a3412;
+  border-color: #fed7aa;
+}
+
+.badge-snowskin {
+  background-color: #ecfdf5;
+  color: #065f46;
+  border-color: #a7f3d0;
+}
+
+.badge-box {
+  background-color: #f3e8ff;
+  color: #6b21a8;
+  border-color: #e9d5ff;
+}
+
+.badge-combo {
+  background-color: #ffe4e6;
+  color: #9f1239;
+  border-color: #fecdd3;
+}
+
+.badge-other {
+  background-color: #f5f5f4;
+  color: #57534e;
+  border-color: #e7e5e4;
+}
+
+/* Discount Selector Pills */
+.discount-pill {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 8px;
+  background: white;
+  border: 1.5px solid var(--border-color);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  text-align: center;
+  transition: all var(--transition-fast);
+}
+
+.discount-pill:hover {
+  border-color: var(--primary);
+  background: #fffcf8;
+}
+
+.discount-pill.active {
+  border-color: var(--primary);
+  background: #ffedd5;
+  color: var(--primary);
+}
+
 .urgency-badge {
   display: inline-block;
   font-size: 11px;

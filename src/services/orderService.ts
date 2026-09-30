@@ -1,15 +1,15 @@
-import { Order, OrderStatus } from '../models/Order';
+import { Order, OrderItem, OrderStatus, DiscountType, CustomerInfo } from '../models/Order';
 import { storageService } from './storageService';
 
 export interface CreateOrderInput {
-  customerName: string;
-  phone?: string;
-  productName: string;
-  quantity: number;
-  unitPrice: number;
-  deposit?: number;
+  customer: CustomerInfo;
+  items: OrderItem[];
   orderDate: string; // YYYY-MM-DD
   deliveryDate: string; // YYYY-MM-DD
+  discountType: DiscountType;
+  discountValue: number;
+  discountNote?: string;
+  deposit?: number;
   status: OrderStatus;
   note?: string;
 }
@@ -19,213 +19,239 @@ export type UpdateOrderInput = Partial<CreateOrderInput>;
 export interface FilterOptions {
   searchQuery?: string;
   status?: OrderStatus | 'all';
-  startDate?: string; // YYYY-MM-DD
-  endDate?: string; // YYYY-MM-DD
-  sortBy?: 'newest' | 'oldest';
+  deliveryDate?: string;
+  startDate?: string;
+  endDate?: string;
+  sortBy?: 'delivery-soon' | 'newest' | 'oldest';
+}
+
+/**
+ * Calculate financial totals with flexible discount modes
+ */
+export function calculateOrderTotals(
+  items: OrderItem[],
+  discountType: DiscountType,
+  discountValue: number,
+  deposit: number = 0
+): { subtotal: number; discountAmount: number; total: number; remaining: number } {
+  const subtotal = items.reduce((sum, item) => {
+    const price =
+      item.customPrice !== undefined && item.customPrice >= 0
+        ? Number(item.customPrice)
+        : Number(item.originalPrice) || 0;
+    const qty = Math.max(1, Number(item.quantity) || 1);
+    return sum + qty * price;
+  }, 0);
+
+  let discountAmount = 0;
+  let finalTotal = subtotal;
+
+  if (discountType === 'amount') {
+    discountAmount = Math.max(0, Math.min(subtotal, Number(discountValue) || 0));
+    finalTotal = Math.max(0, subtotal - discountAmount);
+  } else if (discountType === 'percent') {
+    const pct = Math.max(0, Math.min(100, Number(discountValue) || 0));
+    discountAmount = Math.round((subtotal * pct) / 100);
+    finalTotal = Math.max(0, subtotal - discountAmount);
+  } else if (discountType === 'override') {
+    finalTotal = Math.max(0, Number(discountValue) || 0);
+    discountAmount = Math.max(0, subtotal - finalTotal);
+  }
+
+  const cleanDeposit = Math.max(0, Number(deposit) || 0);
+  const remaining = Math.max(0, finalTotal - cleanDeposit);
+
+  return {
+    subtotal,
+    discountAmount,
+    total: finalTotal,
+    remaining,
+  };
 }
 
 class OrderService {
   private orders: Order[] = [];
   private isInitialized = false;
 
-  /**
-   * Initialize orders list from local storage
-   */
   public async init(): Promise<Order[]> {
-    const { document } = await storageService.loadDocument();
-    this.orders = [...document.orders];
+    this.orders = await storageService.loadOrders();
     this.isInitialized = true;
     return this.orders;
   }
 
-  /**
-   * Ensure order service is loaded
-   */
   private async ensureLoaded(): Promise<void> {
     if (!this.isInitialized) {
       await this.init();
     }
   }
 
-  /**
-   * Get all orders
-   */
   public async getAllOrders(): Promise<Order[]> {
     await this.ensureLoaded();
     return [...this.orders];
   }
 
-  /**
-   * Find order by unique ID
-   */
   public async getOrderById(id: string): Promise<Order | undefined> {
     await this.ensureLoaded();
     return this.orders.find((o) => o.id === id);
   }
 
-  /**
-   * Generate next sequential Order ID (e.g. ORD-0001, ORD-0002)
-   */
   public generateNextId(): string {
-    let maxNumber = 0;
+    let max = 0;
     const regex = /^ORD-(\d+)$/i;
 
-    for (const order of this.orders) {
-      const match = order.id.match(regex);
+    for (const o of this.orders) {
+      const match = o.id.match(regex);
       if (match && match[1]) {
         const num = parseInt(match[1], 10);
-        if (!isNaN(num) && num > maxNumber) {
-          maxNumber = num;
-        }
+        if (num > max) max = num;
       }
     }
-
-    const nextNumber = maxNumber + 1;
-    return `ORD-${String(nextNumber).padStart(4, '0')}`;
+    return `ORD-${String(max + 1).padStart(4, '0')}`;
   }
 
-  /**
-   * Add a new order
-   */
   public async addOrder(input: CreateOrderInput): Promise<Order> {
     await this.ensureLoaded();
 
-    const quantity = Math.max(1, Math.floor(Number(input.quantity) || 1));
-    const unitPrice = Math.max(0, Number(input.unitPrice) || 0);
-    const deposit = Math.max(0, Number(input.deposit) || 0);
-    const total = quantity * unitPrice;
+    const totals = calculateOrderTotals(
+      input.items,
+      input.discountType,
+      input.discountValue,
+      input.deposit || 0
+    );
 
-    const nowIso = new Date().toISOString();
+    const now = new Date().toISOString();
     const newOrder: Order = {
       id: this.generateNextId(),
-      customerName: input.customerName.trim(),
-      phone: (input.phone || '').trim(),
-      productName: input.productName.trim(),
-      quantity,
-      unitPrice,
-      total,
-      deposit,
+      customer: {
+        name: (input.customer.name || 'Khách vãng lai').trim(),
+        phone: (input.customer.phone || '').trim(),
+        address: (input.customer.address || '').trim(),
+        note: (input.customer.note || '').trim(),
+      },
+      items: input.items.map((it) => ({
+        productId: it.productId,
+        productName: it.productName,
+        quantity: Math.max(1, Number(it.quantity) || 1),
+        originalPrice: Math.max(0, Number(it.originalPrice) || 0),
+        customPrice: it.customPrice !== undefined ? Math.max(0, Number(it.customPrice)) : undefined,
+      })),
       orderDate: input.orderDate,
       deliveryDate: input.deliveryDate,
+      subtotal: totals.subtotal,
+      discountType: input.discountType,
+      discountValue: Number(input.discountValue) || 0,
+      discountNote: (input.discountNote || '').trim(),
+      total: totals.total,
+      deposit: Math.max(0, Number(input.deposit) || 0),
+      remaining: totals.remaining,
       status: input.status || 'pending',
       note: (input.note || '').trim(),
-      createdAt: nowIso,
-      updatedAt: nowIso,
+      createdAt: now,
+      updatedAt: now,
     };
 
-    // Prepend to list (newest on top)
     this.orders.unshift(newOrder);
-
-    await this.persist();
+    await storageService.saveOrders(this.orders);
     return newOrder;
   }
 
-  /**
-   * Update an existing order
-   */
   public async updateOrder(id: string, input: UpdateOrderInput): Promise<Order> {
     await this.ensureLoaded();
 
     const index = this.orders.findIndex((o) => o.id === id);
     if (index === -1) {
-      throw new Error(`Không tìm thấy đơn hàng có mã ${id}`);
+      throw new Error(`Không tìm thấy đơn hàng mã ${id}`);
     }
 
     const existing = this.orders[index];
-    const quantity =
-      input.quantity !== undefined
-        ? Math.max(1, Math.floor(Number(input.quantity) || 1))
-        : existing.quantity;
-    const unitPrice =
-      input.unitPrice !== undefined
-        ? Math.max(0, Number(input.unitPrice) || 0)
-        : existing.unitPrice;
-    const deposit =
-      input.deposit !== undefined
-        ? Math.max(0, Number(input.deposit) || 0)
-        : existing.deposit;
-    const total = quantity * unitPrice;
+    const items = input.items || existing.items;
+    const discountType = input.discountType || existing.discountType;
+    const discountValue = input.discountValue !== undefined ? input.discountValue : existing.discountValue;
+    const deposit = input.deposit !== undefined ? input.deposit : existing.deposit;
 
-    const updatedOrder: Order = {
+    const totals = calculateOrderTotals(items, discountType, discountValue, deposit);
+
+    const updated: Order = {
       ...existing,
-      customerName:
-        input.customerName !== undefined ? input.customerName.trim() : existing.customerName,
-      phone: input.phone !== undefined ? input.phone.trim() : existing.phone,
-      productName:
-        input.productName !== undefined ? input.productName.trim() : existing.productName,
-      quantity,
-      unitPrice,
-      total,
-      deposit,
+      customer: input.customer
+        ? {
+            name: (input.customer.name || existing.customer.name).trim(),
+            phone: (input.customer.phone ?? existing.customer.phone ?? '').trim(),
+            address: (input.customer.address ?? existing.customer.address ?? '').trim(),
+            note: (input.customer.note ?? existing.customer.note ?? '').trim(),
+          }
+        : existing.customer,
+      items,
       orderDate: input.orderDate || existing.orderDate,
       deliveryDate: input.deliveryDate || existing.deliveryDate,
+      subtotal: totals.subtotal,
+      discountType,
+      discountValue,
+      discountNote: input.discountNote !== undefined ? input.discountNote.trim() : existing.discountNote,
+      total: totals.total,
+      deposit,
+      remaining: totals.remaining,
       status: input.status || existing.status,
       note: input.note !== undefined ? input.note.trim() : existing.note,
       updatedAt: new Date().toISOString(),
     };
 
-    this.orders[index] = updatedOrder;
-    await this.persist();
-    return updatedOrder;
+    this.orders[index] = updated;
+    await storageService.saveOrders(this.orders);
+    return updated;
   }
 
-  /**
-   * Delete an order
-   */
   public async deleteOrder(id: string): Promise<boolean> {
     await this.ensureLoaded();
 
     const index = this.orders.findIndex((o) => o.id === id);
-    if (index === -1) {
-      return false;
-    }
+    if (index === -1) return false;
 
     this.orders.splice(index, 1);
-    await this.persist();
+    await storageService.saveOrders(this.orders);
     return true;
   }
 
   /**
-   * Search and filter orders
+   * Filter and search orders
    */
   public filterOrders(options: FilterOptions): Order[] {
     let result = [...this.orders];
 
-    // Search query (name, phone, product)
     if (options.searchQuery && options.searchQuery.trim()) {
       const q = options.searchQuery.trim().toLowerCase();
       result = result.filter(
         (o) =>
-          o.customerName.toLowerCase().includes(q) ||
-          o.phone.toLowerCase().includes(q) ||
-          o.productName.toLowerCase().includes(q) ||
-          o.id.toLowerCase().includes(q)
+          o.id.toLowerCase().includes(q) ||
+          o.customer.name.toLowerCase().includes(q) ||
+          (o.customer.phone && o.customer.phone.includes(q)) ||
+          o.items.some((it) => it.productName.toLowerCase().includes(q))
       );
     }
 
-    // Filter by status
     if (options.status && options.status !== 'all') {
       result = result.filter((o) => o.status === options.status);
     }
 
-    // Filter by date range (orderDate)
-    if (options.startDate) {
-      result = result.filter((o) => o.orderDate >= options.startDate!);
-    }
-    if (options.endDate) {
-      result = result.filter((o) => o.orderDate <= options.endDate!);
+    if (options.deliveryDate) {
+      result = result.filter((o) => o.deliveryDate === options.deliveryDate);
     }
 
-    // Sort
-    const sortBy = options.sortBy || 'newest';
+    if (options.startDate) {
+      result = result.filter((o) => o.deliveryDate >= options.startDate!);
+    }
+    if (options.endDate) {
+      result = result.filter((o) => o.deliveryDate <= options.endDate!);
+    }
+
+    const sortBy = options.sortBy || 'delivery-soon';
     result.sort((a, b) => {
-      // Primary: orderDate, Secondary: createdAt
-      const dateA = a.orderDate + ' ' + (a.createdAt || '');
-      const dateB = b.orderDate + ' ' + (b.createdAt || '');
-      if (sortBy === 'newest') {
-        return dateB.localeCompare(dateA);
+      if (sortBy === 'delivery-soon') {
+        return a.deliveryDate.localeCompare(b.deliveryDate) || b.createdAt.localeCompare(a.createdAt);
+      } else if (sortBy === 'newest') {
+        return b.createdAt.localeCompare(a.createdAt);
       } else {
-        return dateA.localeCompare(dateB);
+        return a.createdAt.localeCompare(b.createdAt);
       }
     });
 
@@ -233,26 +259,37 @@ class OrderService {
   }
 
   /**
-   * Replace all orders (used for JSON restore)
+   * Get total mooncake quantities sold grouped by flavor/filling
    */
+  public getMooncakeFillingStats(): Array<{ productName: string; quantity: number; totalAmount: number }> {
+    const stats: Record<string, { quantity: number; totalAmount: number }> = {};
+
+    for (const order of this.orders) {
+      if (order.status === 'cancelled') continue;
+
+      for (const it of order.items) {
+        if (!stats[it.productName]) {
+          stats[it.productName] = { quantity: 0, totalAmount: 0 };
+        }
+        const effectivePrice = it.customPrice !== undefined ? it.customPrice : it.originalPrice;
+        stats[it.productName].quantity += it.quantity;
+        stats[it.productName].totalAmount += it.quantity * effectivePrice;
+      }
+    }
+
+    return Object.entries(stats)
+      .map(([productName, data]) => ({
+        productName,
+        quantity: data.quantity,
+        totalAmount: data.totalAmount,
+      }))
+      .sort((a, b) => b.quantity - a.quantity);
+  }
+
   public async replaceAllOrders(newOrders: Order[]): Promise<void> {
     this.orders = [...newOrders];
     this.isInitialized = true;
-    await this.persist();
-  }
-
-  /**
-   * Persist current in-memory orders to storage
-   */
-  private async persist(): Promise<void> {
-    const doc = storageService.getCachedDocument() || {
-      schemaVersion: 1,
-      appName: 'MunKek',
-      updatedAt: new Date().toISOString(),
-      orders: [],
-    };
-    doc.orders = this.orders;
-    await storageService.saveDocument(doc);
+    await storageService.saveOrders(this.orders);
   }
 }
 

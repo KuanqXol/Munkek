@@ -1,5 +1,7 @@
 import { orderService } from '../services/orderService';
-import { Order, OrderStatus } from '../models/Order';
+import { productService } from '../services/productService';
+import { Order, OrderItem, OrderStatus, DiscountType } from '../models/Order';
+import { Product } from '../models/Product';
 import { getTodayString, formatCurrency } from '../utils/formatters';
 import { validateOrderForm, OrderFormData } from '../utils/validators';
 import { toast } from '../components/Toast';
@@ -9,6 +11,13 @@ export class OrderFormPage {
   private onNavigate: (page: string, param?: string) => void;
   private editOrderId?: string;
   private existingOrder?: Order;
+
+  private availableProducts: Product[] = [];
+  private cartItems: OrderItem[] = [];
+  private discountType: DiscountType = 'none';
+  private discountValue = 0;
+  private discountNote = '';
+  private deposit = 0;
 
   constructor(
     container: HTMLElement,
@@ -21,6 +30,8 @@ export class OrderFormPage {
   }
 
   public async render(): Promise<void> {
+    this.availableProducts = await productService.getAllProducts();
+
     if (this.editOrderId) {
       this.existingOrder = await orderService.getOrderById(this.editOrderId);
       if (!this.existingOrder) {
@@ -28,42 +39,41 @@ export class OrderFormPage {
         this.onNavigate('orders');
         return;
       }
+      this.cartItems = JSON.parse(JSON.stringify(this.existingOrder.items || []));
+      this.discountType = this.existingOrder.discountType || 'none';
+      this.discountValue = this.existingOrder.discountValue || 0;
+      this.discountNote = this.existingOrder.discountNote || '';
+      this.deposit = this.existingOrder.deposit || 0;
+    } else {
+      // Default cart: if products exist, add first available product with quantity 1
+      if (this.availableProducts.length > 0 && this.cartItems.length === 0) {
+        const first = this.availableProducts[0];
+        this.cartItems.push({
+          productId: first.id,
+          productName: first.name,
+          quantity: 1,
+          originalPrice: first.unitPrice,
+        });
+      }
     }
 
+    this.renderForm();
+  }
+
+  private renderForm(): void {
     const isEdit = !!this.existingOrder;
     const today = getTodayString();
 
-    const initialData: OrderFormData = this.existingOrder
-      ? {
-          customerName: this.existingOrder.customerName,
-          phone: this.existingOrder.phone,
-          productName: this.existingOrder.productName,
-          quantity: this.existingOrder.quantity,
-          unitPrice: this.existingOrder.unitPrice,
-          deposit: this.existingOrder.deposit,
-          orderDate: this.existingOrder.orderDate,
-          deliveryDate: this.existingOrder.deliveryDate,
-          status: this.existingOrder.status,
-          note: this.existingOrder.note,
-        }
-      : {
-          customerName: '',
-          phone: '',
-          productName: '',
-          quantity: 1,
-          unitPrice: 150000,
-          deposit: 0,
-          orderDate: today,
-          deliveryDate: today,
-          status: 'pending',
-          note: '',
-        };
-
-    const initialTotal = Number(initialData.quantity) * Number(initialData.unitPrice);
-    const initialRemaining = Math.max(0, initialTotal - Number(initialData.deposit));
+    const customerName = this.existingOrder?.customer?.name || '';
+    const phone = this.existingOrder?.customer?.phone || '';
+    const address = this.existingOrder?.customer?.address || '';
+    const orderDate = this.existingOrder?.orderDate || today;
+    const deliveryDate = this.existingOrder?.deliveryDate || today;
+    const status = this.existingOrder?.status || 'pending';
+    const note = this.existingOrder?.note || '';
 
     this.container.innerHTML = `
-      <div style="max-width: 780px; margin: 0 auto;">
+      <div style="max-width: 860px; margin: 0 auto; padding-bottom: 40px;">
         <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px;">
           <div>
             <div style="display: flex; align-items: center; gap: 10px;">
@@ -71,247 +81,555 @@ export class OrderFormPage {
                 ← Quay lại
               </button>
               <h2 style="font-size: 24px; font-weight: 800; color: var(--text-primary); letter-spacing: -0.5px;">
-                ${isEdit ? `Chỉnh sửa Đơn hàng: ${this.existingOrder?.id}` : 'Thêm Đơn hàng mới'}
+                ${isEdit ? `Chỉnh sửa Đơn hàng: ${this.existingOrder?.id}` : 'Thêm Đơn hàng Bánh Trung Thu'}
               </h2>
             </div>
             <p style="font-size: 14px; color: var(--text-muted); margin-top: 4px; margin-left: 90px;">
-              ${isEdit ? 'Cập nhật thông tin chi tiết đơn bánh' : 'Điền thông tin khách hàng và chi tiết món bánh đặt'}
+              ${isEdit ? 'Cập nhật bánh đặt, điều chỉnh giảm giá hoặc tiến độ đơn' : 'Ghi chép các loại bánh đặt mua, tiền cọc và lịch hẹn giao'}
             </p>
           </div>
         </div>
 
-        <form id="order-form" class="form-card" novalidate>
-          <div class="form-grid">
-            <!-- Tên khách hàng -->
-            <div class="form-group">
-              <label class="form-label" for="customerName">
-                Tên khách hàng <span class="required">*</span>
-              </label>
-              <input
-                type="text"
-                id="customerName"
-                name="customerName"
-                class="form-control"
-                placeholder="Ví dụ: Chị Lan, Anh Hùng..."
-                value="${initialData.customerName}"
-                required
-              />
-              <div class="form-error" id="err-customerName"></div>
+        <form id="order-form" novalidate>
+          <!-- Section 1: Customer Information -->
+          <div class="card" style="margin-bottom: 20px;">
+            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 16px;">
+              <span style="font-size: 20px;">👤</span>
+              <h3 style="font-size: 16px; font-weight: 700; color: var(--text-primary);">Thông tin Khách hàng (Tùy chọn)</h3>
+            </div>
+            <div class="form-grid">
+              <div class="form-group">
+                <label class="form-label" for="customerName">Tên khách / Biệt danh thân mật</label>
+                <input
+                  type="text"
+                  id="customerName"
+                  name="customerName"
+                  class="form-control"
+                  placeholder="Ví dụ: Chị Mai hàng xóm, Anh Tuấn cơ quan..."
+                  value="${customerName}"
+                />
+              </div>
+
+              <div class="form-group">
+                <label class="form-label" for="phone">Số điện thoại</label>
+                <input
+                  type="tel"
+                  id="phone"
+                  name="phone"
+                  class="form-control"
+                  placeholder="Ví dụ: 0912 345 678"
+                  value="${phone}"
+                />
+              </div>
+
+              <div class="form-group form-group-full">
+                <label class="form-label" for="address">Địa chỉ giao / Hẹn nhận bánh</label>
+                <input
+                  type="text"
+                  id="address"
+                  name="address"
+                  class="form-control"
+                  placeholder="Ví dụ: Khách qua tiệm lấy, Gửi xe buýt, Ship tới số 15..."
+                  value="${address}"
+                />
+              </div>
+            </div>
+          </div>
+
+          <!-- Section 2: Mooncake Cart Items -->
+          <div class="card" style="margin-bottom: 20px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <span style="font-size: 20px;">🥮</span>
+                <h3 style="font-size: 16px; font-weight: 700; color: var(--text-primary);">Danh sách Bánh Trung Thu đã đặt</h3>
+              </div>
+              <button type="button" class="btn btn-secondary btn-sm" id="btn-add-item-row">
+                <span>➕</span> Thêm loại bánh
+              </button>
             </div>
 
-            <!-- Số điện thoại -->
-            <div class="form-group">
-              <label class="form-label" for="phone">
-                Số điện thoại liên hệ
-              </label>
-              <input
-                type="tel"
-                id="phone"
-                name="phone"
-                class="form-control"
-                placeholder="Ví dụ: 0912 345 678"
-                value="${initialData.phone}"
-              />
-              <div class="form-error" id="err-phone"></div>
+            <!-- Items List Container -->
+            <div id="cart-items-container">
+              <!-- Rendered dynamically -->
             </div>
+            <div class="form-error" id="err-items" style="margin-top: 8px;"></div>
+          </div>
 
-            <!-- Tên bánh -->
-            <div class="form-group form-group-full">
-              <label class="form-label" for="productName">
-                Tên món bánh / Sản phẩm <span class="required">*</span>
-              </label>
-              <input
-                type="text"
-                id="productName"
-                name="productName"
-                class="form-control"
-                placeholder="Ví dụ: Bánh kem bắp sinh nhật 20cm, Tiramisu..."
-                value="${initialData.productName}"
-                required
-              />
-              <div class="form-error" id="err-productName"></div>
-            </div>
-
-            <!-- Số lượng -->
-            <div class="form-group">
-              <label class="form-label" for="quantity">
-                Số lượng bánh <span class="required">*</span>
-              </label>
-              <input
-                type="number"
-                id="quantity"
-                name="quantity"
-                class="form-control"
-                min="1"
-                step="1"
-                value="${initialData.quantity}"
-                required
-              />
-              <div class="form-error" id="err-quantity"></div>
-            </div>
-
-            <!-- Đơn giá -->
-            <div class="form-group">
-              <label class="form-label" for="unitPrice">
-                Đơn giá (VNĐ) <span class="required">*</span>
-              </label>
-              <input
-                type="number"
-                id="unitPrice"
-                name="unitPrice"
-                class="form-control"
-                min="0"
-                step="1000"
-                value="${initialData.unitPrice}"
-                required
-              />
-              <div class="form-error" id="err-unitPrice"></div>
-            </div>
-
-            <!-- Tiền cọc -->
-            <div class="form-group">
-              <label class="form-label" for="deposit">
-                Tiền đặt cọc trước (VNĐ)
-              </label>
-              <input
-                type="number"
-                id="deposit"
-                name="deposit"
-                class="form-control"
-                min="0"
-                step="1000"
-                value="${initialData.deposit}"
-              />
-              <div class="form-error" id="err-deposit"></div>
-            </div>
-
-            <!-- Trạng thái -->
-            <div class="form-group">
-              <label class="form-label" for="status">
-                Trạng thái đơn hàng <span class="required">*</span>
-              </label>
-              <select id="status" name="status" class="form-control">
-                <option value="pending" ${initialData.status === 'pending' ? 'selected' : ''}>Chờ xử lý</option>
-                <option value="preparing" ${initialData.status === 'preparing' ? 'selected' : ''}>Đang làm</option>
-                <option value="completed" ${initialData.status === 'completed' ? 'selected' : ''}>Hoàn thành</option>
-                <option value="cancelled" ${initialData.status === 'cancelled' ? 'selected' : ''}>Đã hủy</option>
-              </select>
-            </div>
-
-            <!-- Ngày đặt -->
-            <div class="form-group">
-              <label class="form-label" for="orderDate">
-                Ngày nhận đơn <span class="required">*</span>
-              </label>
-              <input
-                type="date"
-                id="orderDate"
-                name="orderDate"
-                class="form-control"
-                value="${initialData.orderDate}"
-                required
-              />
-              <div class="form-error" id="err-orderDate"></div>
-            </div>
-
-            <!-- Ngày giao -->
-            <div class="form-group">
-              <label class="form-label" for="deliveryDate">
-                Ngày hẹn giao bánh <span class="required">*</span>
-              </label>
-              <input
-                type="date"
-                id="deliveryDate"
-                name="deliveryDate"
-                class="form-control"
-                value="${initialData.deliveryDate}"
-                required
-              />
-              <div class="form-error" id="err-deliveryDate"></div>
-            </div>
-
-            <!-- Auto-calculate Preview Box -->
-            <div class="form-group-full total-preview-box">
+          <!-- Section 3: Flexible Discounts for Acquaintances & Friends -->
+          <div class="card" style="margin-bottom: 20px;">
+            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 16px;">
+              <span style="font-size: 20px;">🏷️</span>
               <div>
-                <div class="total-preview-label">Thành tiền (Số lượng × Đơn giá):</div>
-                <div id="preview-calc-formula" style="font-size: 13px; color: #9a3412;">
-                  ${initialData.quantity} × ${formatCurrency(Number(initialData.unitPrice))}
-                </div>
-              </div>
-              <div style="text-align: right;">
-                <div class="total-preview-value" id="preview-total-value">
-                  ${formatCurrency(initialTotal)}
-                </div>
-                <div style="font-size: 13px; color: #78350f; margin-top: 2px;" id="preview-remaining-value">
-                  Còn lại phải thu: ${formatCurrency(initialRemaining)}
-                </div>
+                <h3 style="font-size: 16px; font-weight: 700; color: var(--text-primary);">Chính sách Giảm giá & Giá bán Thân thiết</h3>
+                <p style="font-size: 13px; color: var(--text-muted);">Bớt tiền cho người quen, giảm % cho khách mua sỉ hoặc tự chốt giá bán</p>
               </div>
             </div>
 
-            <!-- Ghi chú -->
-            <div class="form-group form-group-full">
-              <label class="form-label" for="note">
-                Ghi chú thêm về đơn bánh
+            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 16px;" id="discount-type-selector">
+              <label class="discount-pill ${this.discountType === 'none' ? 'active' : ''}">
+                <input type="radio" name="discountRadio" value="none" ${this.discountType === 'none' ? 'checked' : ''} style="display: none;" />
+                <span style="font-weight: 700;">Không giảm</span>
+                <span style="font-size: 11px; opacity: 0.8;">Theo giá niêm yết</span>
               </label>
-              <textarea
-                id="note"
-                name="note"
-                class="form-control"
-                rows="3"
-                placeholder="Ví dụ: Ghi chữ 'Chúc mừng sinh nhật bé Bắp', ít ngọt, nến số 5..."
-              >${initialData.note}</textarea>
+
+              <label class="discount-pill ${this.discountType === 'amount' ? 'active' : ''}">
+                <input type="radio" name="discountRadio" value="amount" ${this.discountType === 'amount' ? 'checked' : ''} style="display: none;" />
+                <span style="font-weight: 700;">Bớt tiền mặt (VNĐ)</span>
+                <span style="font-size: 11px; opacity: 0.8;">Bớt tiền lẻ, hỗ trợ ship</span>
+              </label>
+
+              <label class="discount-pill ${this.discountType === 'percent' ? 'active' : ''}">
+                <input type="radio" name="discountRadio" value="percent" ${this.discountType === 'percent' ? 'checked' : ''} style="display: none;" />
+                <span style="font-weight: 700;">Giảm theo %</span>
+                <span style="font-size: 11px; opacity: 0.8;">Chiết khấu 5%, 10%, 15%</span>
+              </label>
+
+              <label class="discount-pill ${this.discountType === 'override' ? 'active' : ''}">
+                <input type="radio" name="discountRadio" value="override" ${this.discountType === 'override' ? 'checked' : ''} style="display: none;" />
+                <span style="font-weight: 700;">Chốt giá trọn gói</span>
+                <span style="font-size: 11px; opacity: 0.8;">Thỏa thuận riêng</span>
+              </label>
+            </div>
+
+            <div id="discount-inputs-box" style="${this.discountType === 'none' ? 'display: none;' : 'display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; background: #fffcf8; padding: 16px; border-radius: var(--radius-md); border: 1px solid var(--border-color);'}">
+              <div class="form-group">
+                <label class="form-label" id="label-discount-val" for="discountValue">
+                  ${this.discountType === 'percent' ? 'Tỷ lệ chiết khấu (%)' : this.discountType === 'override' ? 'Tổng tiền chốt thỏa thuận (VNĐ)' : 'Số tiền bớt (VNĐ)'}
+                </label>
+                <input
+                  type="number"
+                  id="discountValue"
+                  class="form-control"
+                  min="0"
+                  step="${this.discountType === 'percent' ? 1 : 1000}"
+                  value="${this.discountValue}"
+                />
+                <div class="form-error" id="err-discountValue"></div>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label" for="discountNote">Lý do giảm / Ghi chú thân quen</label>
+                <input
+                  type="text"
+                  id="discountNote"
+                  class="form-control"
+                  placeholder="Ví dụ: Bạn thân, Khách quen mua sỉ, Bớt tiền lẻ..."
+                  value="${this.discountNote}"
+                />
+              </div>
+            </div>
+          </div>
+
+          <!-- Section 4: Live Totals & Deposit -->
+          <div class="card" style="margin-bottom: 20px; background: #fffcf9; border: 2px solid #fed7aa;">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+              <div>
+                <div class="form-group">
+                  <label class="form-label" for="deposit" style="font-weight: 700; color: #15803d;">
+                    💰 Tiền khách đã đặt cọc trước (VNĐ)
+                  </label>
+                  <input
+                    type="number"
+                    id="deposit"
+                    class="form-control"
+                    min="0"
+                    step="5000"
+                    placeholder="0"
+                    value="${this.deposit}"
+                    style="font-size: 16px; font-weight: 700; color: #15803d;"
+                  />
+                  <div class="form-error" id="err-deposit"></div>
+                </div>
+
+                <div style="display: flex; gap: 8px; margin-top: 8px;">
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-quick-dep-0">0đ</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-quick-dep-50">Cọc 50%</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-quick-dep-full">Đã trả đủ 100%</button>
+                </div>
+              </div>
+
+              <!-- Calculation Result Board -->
+              <div style="background: white; border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 14px 18px; display: flex; flex-direction: column; justify-content: center; gap: 6px;">
+                <div style="display: flex; justify-content: space-between; font-size: 13px; color: var(--text-secondary);">
+                  <span>Tạm tính giỏ bánh:</span>
+                  <strong id="summary-subtotal">0 đ</strong>
+                </div>
+                <div style="display: flex; justify-content: space-between; font-size: 13px; color: #dc2626;" id="summary-discount-row">
+                  <span>Giảm giá / Ưu đãi:</span>
+                  <strong id="summary-discount">-0 đ</strong>
+                </div>
+                <div style="display: flex; justify-content: space-between; font-size: 16px; font-weight: 800; color: var(--primary); border-top: 1px solid var(--border-light); padding-top: 6px;">
+                  <span>Tổng tiền thanh toán:</span>
+                  <span id="summary-total">0 đ</span>
+                </div>
+                <div style="display: flex; justify-content: space-between; font-size: 14px; font-weight: 700; color: #b45309; border-top: 1px dashed #fed7aa; padding-top: 6px;">
+                  <span>Còn lại phải thu khi giao:</span>
+                  <span id="summary-remaining">0 đ</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Section 5: Schedule & Status -->
+          <div class="card" style="margin-bottom: 24px;">
+            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 16px;">
+              <span style="font-size: 20px;">📅</span>
+              <h3 style="font-size: 16px; font-weight: 700; color: var(--text-primary);">Thời gian & Trạng thái đơn</h3>
+            </div>
+
+            <div class="form-grid">
+              <div class="form-group">
+                <label class="form-label" for="orderDate">Ngày nhận đơn <span class="required">*</span></label>
+                <input
+                  type="date"
+                  id="orderDate"
+                  class="form-control"
+                  value="${orderDate}"
+                  required
+                />
+                <div class="form-error" id="err-orderDate"></div>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label" for="deliveryDate">Ngày hẹn giao bánh <span class="required">*</span></label>
+                <input
+                  type="date"
+                  id="deliveryDate"
+                  class="form-control"
+                  value="${deliveryDate}"
+                  required
+                />
+                <div class="form-error" id="err-deliveryDate"></div>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label" for="status">Tiến độ đơn hàng</label>
+                <select id="status" class="form-control">
+                  <option value="pending" ${status === 'pending' ? 'selected' : ''}>Chờ làm (Đặt trước)</option>
+                  <option value="preparing" ${status === 'preparing' ? 'selected' : ''}>Đang làm / Nướng bánh</option>
+                  <option value="completed" ${status === 'completed' ? 'selected' : ''}>Đã giao / Hoàn thành</option>
+                  <option value="cancelled" ${status === 'cancelled' ? 'selected' : ''}>Đã hủy đơn</option>
+                </select>
+              </div>
+
+              <div class="form-group form-group-full">
+                <label class="form-label" for="note">Ghi chú riêng cho mẻ bánh</label>
+                <textarea
+                  id="note"
+                  class="form-control"
+                  rows="2"
+                  placeholder="Ví dụ: Khách dặn ít ngọt, đóng hộp quà 4 bánh có túi xách đẹp..."
+                >${note}</textarea>
+              </div>
             </div>
           </div>
 
           <!-- Actions -->
-          <div style="display: flex; justify-content: flex-end; gap: 14px; margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--border-light);">
+          <div style="display: flex; justify-content: flex-end; gap: 14px;">
             <button type="button" class="btn btn-secondary btn-lg" id="form-btn-cancel">
               Hủy bỏ
             </button>
             <button type="submit" class="btn btn-primary btn-lg" id="form-btn-submit">
-              <span>💾</span> ${isEdit ? 'Lưu thay đổi' : 'Tạo đơn hàng'}
+              <span>💾</span> ${isEdit ? 'Lưu thay đổi đơn bánh' : 'Tạo đơn bánh mới'}
             </button>
           </div>
         </form>
       </div>
     `;
 
-    this.attachFormEvents();
+    this.renderCartItems();
+    this.attachEvents();
+    this.updateCalculationSummary();
   }
 
-  private attachFormEvents(): void {
+  private renderCartItems(): void {
+    const container = this.container.querySelector('#cart-items-container');
+    if (!container) return;
+
+    if (this.cartItems.length === 0) {
+      container.innerHTML = `
+        <div style="text-align: center; padding: 24px; background: #fafaf9; border-radius: var(--radius-md); border: 1px dashed var(--border-color);">
+          <div style="font-size: 32px; margin-bottom: 8px;">🥮</div>
+          <div style="font-size: 14px; font-weight: 600; color: var(--text-secondary);">Chưa có bánh nào trong đơn hàng</div>
+          <button type="button" class="btn btn-primary btn-sm" id="btn-cart-empty-add" style="margin-top: 10px;">
+            ➕ Chọn bánh ngay
+          </button>
+        </div>
+      `;
+      container.querySelector('#btn-cart-empty-add')?.addEventListener('click', () => {
+        this.addCartItemRow();
+      });
+      return;
+    }
+
+    container.innerHTML = `
+      <div class="table-container" style="border: 1px solid var(--border-color); border-radius: var(--radius-md);">
+        <table class="data-table" style="font-size: 13px;">
+          <thead>
+            <tr>
+              <th style="min-width: 220px;">Loại bánh / Sản phẩm</th>
+              <th style="width: 100px;">Số lượng</th>
+              <th style="width: 130px;">Giá niêm yết</th>
+              <th style="width: 150px;">Giá bán thực tế</th>
+              <th style="width: 130px; text-align: right;">Thành tiền</th>
+              <th style="width: 50px; text-align: center;"></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${this.cartItems
+              .map((it, idx) => {
+                const effectivePrice =
+                  it.customPrice !== undefined && it.customPrice >= 0 ? it.customPrice : it.originalPrice;
+                const lineTotal = it.quantity * effectivePrice;
+
+                return `
+                <tr data-cart-index="${idx}">
+                  <td>
+                    <select class="form-control cart-product-select" data-index="${idx}" style="font-size: 13px; padding: 6px 10px;">
+                      ${this.availableProducts
+                        .map(
+                          (p) =>
+                            `<option value="${p.id}" ${p.id === it.productId ? 'selected' : ''}>
+                              ${p.name} (${formatCurrency(p.unitPrice)})
+                            </option>`
+                        )
+                        .join('')}
+                    </select>
+                  </td>
+                  <td>
+                    <input
+                      type="number"
+                      class="form-control cart-qty-input"
+                      data-index="${idx}"
+                      min="1"
+                      step="1"
+                      value="${it.quantity}"
+                      style="font-size: 13px; padding: 6px 8px; text-align: center;"
+                    />
+                  </td>
+                  <td style="color: var(--text-muted); font-size: 13px;">
+                    ${formatCurrency(it.originalPrice)}
+                  </td>
+                  <td>
+                    <input
+                      type="number"
+                      class="form-control cart-price-input"
+                      data-index="${idx}"
+                      min="0"
+                      step="1000"
+                      placeholder="${it.originalPrice}"
+                      value="${it.customPrice !== undefined ? it.customPrice : ''}"
+                      style="font-size: 13px; padding: 6px 8px;"
+                      title="Nếu bán giá riêng cho bạn bè/người quen, hãy gõ giá vào đây"
+                    />
+                  </td>
+                  <td style="text-align: right; font-weight: 700; color: var(--primary);">
+                    ${formatCurrency(lineTotal)}
+                  </td>
+                  <td style="text-align: center;">
+                    <button type="button" class="btn btn-secondary btn-sm cart-remove-btn" data-index="${idx}" title="Xóa món này" style="padding: 4px 8px; font-size: 12px; color: #dc2626;">
+                      ✕
+                    </button>
+                  </td>
+                </tr>
+              `;
+              })
+              .join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+
+    // Attach listeners to cart rows
+    container.querySelectorAll('.cart-product-select').forEach((sel) => {
+      sel.addEventListener('change', (e) => {
+        const idx = Number((e.currentTarget as HTMLElement).getAttribute('data-index'));
+        const pid = (e.currentTarget as HTMLSelectElement).value;
+        const prod = this.availableProducts.find((p) => p.id === pid);
+        if (prod && this.cartItems[idx]) {
+          this.cartItems[idx].productId = prod.id;
+          this.cartItems[idx].productName = prod.name;
+          this.cartItems[idx].originalPrice = prod.unitPrice;
+          this.cartItems[idx].customPrice = undefined;
+          this.renderCartItems();
+          this.updateCalculationSummary();
+        }
+      });
+    });
+
+    container.querySelectorAll('.cart-qty-input').forEach((inp) => {
+      inp.addEventListener('input', (e) => {
+        const idx = Number((e.currentTarget as HTMLElement).getAttribute('data-index'));
+        const val = Math.max(1, Number((e.currentTarget as HTMLInputElement).value) || 1);
+        if (this.cartItems[idx]) {
+          this.cartItems[idx].quantity = val;
+          this.updateCalculationSummary();
+        }
+      });
+    });
+
+    container.querySelectorAll('.cart-price-input').forEach((inp) => {
+      inp.addEventListener('input', (e) => {
+        const idx = Number((e.currentTarget as HTMLElement).getAttribute('data-index'));
+        const raw = (e.currentTarget as HTMLInputElement).value;
+        if (this.cartItems[idx]) {
+          this.cartItems[idx].customPrice = raw === '' ? undefined : Math.max(0, Number(raw) || 0);
+          this.updateCalculationSummary();
+        }
+      });
+    });
+
+    container.querySelectorAll('.cart-remove-btn').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        const idx = Number((e.currentTarget as HTMLElement).getAttribute('data-index'));
+        this.cartItems.splice(idx, 1);
+        this.renderCartItems();
+        this.updateCalculationSummary();
+      });
+    });
+  }
+
+  private addCartItemRow(): void {
+    if (this.availableProducts.length === 0) {
+      toast.show('Chưa có bánh', 'Vui lòng vào mục "Bánh Trung Thu" để thêm sản phẩm trước.', 'info');
+      return;
+    }
+    const first = this.availableProducts[0];
+    this.cartItems.push({
+      productId: first.id,
+      productName: first.name,
+      quantity: 1,
+      originalPrice: first.unitPrice,
+    });
+    this.renderCartItems();
+    this.updateCalculationSummary();
+  }
+
+  private updateCalculationSummary(): void {
+    // 1. Calculate subtotal
+    const subtotal = this.cartItems.reduce((acc, it) => {
+      const price = it.customPrice !== undefined && it.customPrice >= 0 ? it.customPrice : it.originalPrice;
+      return acc + it.quantity * price;
+    }, 0);
+
+    // 2. Calculate discount
+    let discountAmount = 0;
+    let finalTotal = subtotal;
+
+    if (this.discountType === 'amount') {
+      discountAmount = Math.max(0, Math.min(subtotal, Number(this.discountValue) || 0));
+      finalTotal = Math.max(0, subtotal - discountAmount);
+    } else if (this.discountType === 'percent') {
+      const pct = Math.max(0, Math.min(100, Number(this.discountValue) || 0));
+      discountAmount = Math.round((subtotal * pct) / 100);
+      finalTotal = Math.max(0, subtotal - discountAmount);
+    } else if (this.discountType === 'override') {
+      finalTotal = Math.max(0, Number(this.discountValue) || 0);
+      discountAmount = Math.max(0, subtotal - finalTotal);
+    }
+
+    const remaining = Math.max(0, finalTotal - this.deposit);
+
+    const subEl = this.container.querySelector('#summary-subtotal');
+    const disEl = this.container.querySelector('#summary-discount');
+    const totEl = this.container.querySelector('#summary-total');
+    const remEl = this.container.querySelector('#summary-remaining');
+
+    if (subEl) subEl.textContent = formatCurrency(subtotal);
+    if (disEl) disEl.textContent = `-${formatCurrency(discountAmount)}`;
+    if (totEl) totEl.textContent = formatCurrency(finalTotal);
+    if (remEl) remEl.textContent = formatCurrency(remaining);
+  }
+
+  private attachEvents(): void {
     const form = this.container.querySelector('#order-form') as HTMLFormElement;
     const backBtn = this.container.querySelector('#form-btn-back');
     const cancelBtn = this.container.querySelector('#form-btn-cancel');
-
-    const qtyInput = form.querySelector('#quantity') as HTMLInputElement;
-    const priceInput = form.querySelector('#unitPrice') as HTMLInputElement;
-    const depInput = form.querySelector('#deposit') as HTMLInputElement;
-
-    const formulaEl = form.querySelector('#preview-calc-formula') as HTMLElement;
-    const totalEl = form.querySelector('#preview-total-value') as HTMLElement;
-    const remainingEl = form.querySelector('#preview-remaining-value') as HTMLElement;
-
-    // Live update total and remaining
-    const updatePreview = () => {
-      const q = Math.max(0, Number(qtyInput.value) || 0);
-      const p = Math.max(0, Number(priceInput.value) || 0);
-      const d = Math.max(0, Number(depInput.value) || 0);
-      const tot = q * p;
-      const rem = Math.max(0, tot - d);
-
-      formulaEl.textContent = `${q} × ${formatCurrency(p)}`;
-      totalEl.textContent = formatCurrency(tot);
-      remainingEl.textContent = `Còn lại phải thu: ${formatCurrency(rem)}`;
-    };
-
-    qtyInput.addEventListener('input', updatePreview);
-    priceInput.addEventListener('input', updatePreview);
-    depInput.addEventListener('input', updatePreview);
+    const addItemBtn = this.container.querySelector('#btn-add-item-row');
 
     backBtn?.addEventListener('click', () => this.onNavigate('orders'));
     cancelBtn?.addEventListener('click', () => this.onNavigate('orders'));
+    addItemBtn?.addEventListener('click', () => this.addCartItemRow());
 
+    // Discount type pills
+    const pillInputs = this.container.querySelectorAll('input[name="discountRadio"]');
+    pillInputs.forEach((radio) => {
+      radio.parentElement?.addEventListener('click', () => {
+        const val = (radio as HTMLInputElement).value as DiscountType;
+        this.discountType = val;
+
+        this.container.querySelectorAll('.discount-pill').forEach((p) => p.classList.remove('active'));
+        radio.parentElement?.classList.add('active');
+
+        const box = this.container.querySelector('#discount-inputs-box') as HTMLElement;
+        const labelVal = this.container.querySelector('#label-discount-val') as HTMLElement;
+
+        if (val === 'none') {
+          box.style.display = 'none';
+          this.discountValue = 0;
+        } else {
+          box.style.display = 'grid';
+          if (val === 'percent') {
+            labelVal.textContent = 'Tỷ lệ chiết khấu (%)';
+          } else if (val === 'override') {
+            labelVal.textContent = 'Tổng tiền chốt thỏa thuận (VNĐ)';
+          } else {
+            labelVal.textContent = 'Số tiền bớt (VNĐ)';
+          }
+        }
+        this.updateCalculationSummary();
+      });
+    });
+
+    const discValInput = this.container.querySelector('#discountValue') as HTMLInputElement;
+    discValInput?.addEventListener('input', () => {
+      this.discountValue = Math.max(0, Number(discValInput.value) || 0);
+      this.updateCalculationSummary();
+    });
+
+    const discNoteInput = this.container.querySelector('#discountNote') as HTMLInputElement;
+    discNoteInput?.addEventListener('input', () => {
+      this.discountNote = discNoteInput.value;
+    });
+
+    const depositInput = this.container.querySelector('#deposit') as HTMLInputElement;
+    depositInput?.addEventListener('input', () => {
+      this.deposit = Math.max(0, Number(depositInput.value) || 0);
+      this.updateCalculationSummary();
+    });
+
+    // Quick deposit buttons
+    this.container.querySelector('#btn-quick-dep-0')?.addEventListener('click', () => {
+      this.deposit = 0;
+      if (depositInput) depositInput.value = '0';
+      this.updateCalculationSummary();
+    });
+
+    this.container.querySelector('#btn-quick-dep-50')?.addEventListener('click', () => {
+      const subtotal = this.cartItems.reduce((acc, it) => acc + it.quantity * (it.customPrice ?? it.originalPrice), 0);
+      let total = subtotal;
+      if (this.discountType === 'amount') total = Math.max(0, subtotal - this.discountValue);
+      else if (this.discountType === 'percent') total = Math.max(0, subtotal - (subtotal * this.discountValue) / 100);
+      else if (this.discountType === 'override') total = this.discountValue;
+
+      this.deposit = Math.round(total / 2);
+      if (depositInput) depositInput.value = String(this.deposit);
+      this.updateCalculationSummary();
+    });
+
+    this.container.querySelector('#btn-quick-dep-full')?.addEventListener('click', () => {
+      const subtotal = this.cartItems.reduce((acc, it) => acc + it.quantity * (it.customPrice ?? it.originalPrice), 0);
+      let total = subtotal;
+      if (this.discountType === 'amount') total = Math.max(0, subtotal - this.discountValue);
+      else if (this.discountType === 'percent') total = Math.max(0, subtotal - (subtotal * this.discountValue) / 100);
+      else if (this.discountType === 'override') total = this.discountValue;
+
+      this.deposit = total;
+      if (depositInput) depositInput.value = String(this.deposit);
+      this.updateCalculationSummary();
+    });
+
+    // Submit handler
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       await this.handleSubmit(form);
@@ -319,34 +637,38 @@ export class OrderFormPage {
   }
 
   private async handleSubmit(form: HTMLFormElement): Promise<void> {
-    // Clear previous error messages
     form.querySelectorAll('.form-error').forEach((el) => (el.textContent = ''));
-    form.querySelectorAll('.form-control').forEach((el) => el.classList.remove('is-invalid'));
+
+    const customerName = (form.querySelector('#customerName') as HTMLInputElement).value;
+    const phone = (form.querySelector('#phone') as HTMLInputElement).value;
+    const address = (form.querySelector('#address') as HTMLInputElement).value;
+    const orderDate = (form.querySelector('#orderDate') as HTMLInputElement).value;
+    const deliveryDate = (form.querySelector('#deliveryDate') as HTMLInputElement).value;
+    const status = (form.querySelector('#status') as HTMLSelectElement).value as OrderStatus;
+    const note = (form.querySelector('#note') as HTMLTextAreaElement).value;
 
     const formData: OrderFormData = {
-      customerName: (form.querySelector('#customerName') as HTMLInputElement).value,
-      phone: (form.querySelector('#phone') as HTMLInputElement).value,
-      productName: (form.querySelector('#productName') as HTMLInputElement).value,
-      quantity: (form.querySelector('#quantity') as HTMLInputElement).value,
-      unitPrice: (form.querySelector('#unitPrice') as HTMLInputElement).value,
-      deposit: (form.querySelector('#deposit') as HTMLInputElement).value,
-      orderDate: (form.querySelector('#orderDate') as HTMLInputElement).value,
-      deliveryDate: (form.querySelector('#deliveryDate') as HTMLInputElement).value,
-      status: (form.querySelector('#status') as HTMLSelectElement).value,
-      note: (form.querySelector('#note') as HTMLTextAreaElement).value,
+      customerName,
+      phone,
+      address,
+      items: this.cartItems,
+      discountType: this.discountType,
+      discountValue: this.discountValue,
+      discountNote: this.discountNote,
+      deposit: this.deposit,
+      orderDate,
+      deliveryDate,
+      status,
+      note,
     };
 
     const validation = validateOrderForm(formData);
-
     if (!validation.isValid) {
-      // Display field errors
       for (const [field, msg] of Object.entries(validation.errors)) {
-        const input = form.querySelector(`#${field}`) as HTMLElement;
         const errEl = form.querySelector(`#err-${field}`) as HTMLElement;
-        if (input) input.classList.add('is-invalid');
         if (errEl) errEl.textContent = msg;
       }
-      toast.show('Chưa đúng thông tin', 'Vui lòng kiểm tra lại các trường được báo đỏ.', 'error');
+      toast.show('Chưa đúng thông tin', 'Vui lòng kiểm tra lại thông tin đơn hàng.', 'error');
       return;
     }
 
@@ -355,34 +677,40 @@ export class OrderFormPage {
 
     try {
       if (this.existingOrder) {
-        // Update existing order
         await orderService.updateOrder(this.existingOrder.id, {
-          customerName: formData.customerName,
-          phone: formData.phone,
-          productName: formData.productName,
-          quantity: Number(formData.quantity),
-          unitPrice: Number(formData.unitPrice),
-          deposit: Number(formData.deposit) || 0,
-          orderDate: formData.orderDate,
-          deliveryDate: formData.deliveryDate,
-          status: formData.status as OrderStatus,
-          note: formData.note,
+          customer: {
+            name: customerName,
+            phone,
+            address,
+          },
+          items: this.cartItems,
+          orderDate,
+          deliveryDate,
+          discountType: this.discountType,
+          discountValue: this.discountValue,
+          discountNote: this.discountNote,
+          deposit: this.deposit,
+          status,
+          note,
         });
 
         toast.show('Thành công', `Đã lưu cập nhật cho đơn hàng ${this.existingOrder.id}`, 'success');
       } else {
-        // Create new order
         const created = await orderService.addOrder({
-          customerName: formData.customerName,
-          phone: formData.phone,
-          productName: formData.productName,
-          quantity: Number(formData.quantity),
-          unitPrice: Number(formData.unitPrice),
-          deposit: Number(formData.deposit) || 0,
-          orderDate: formData.orderDate,
-          deliveryDate: formData.deliveryDate,
-          status: formData.status as OrderStatus,
-          note: formData.note,
+          customer: {
+            name: customerName,
+            phone,
+            address,
+          },
+          items: this.cartItems,
+          orderDate,
+          deliveryDate,
+          discountType: this.discountType,
+          discountValue: this.discountValue,
+          discountNote: this.discountNote,
+          deposit: this.deposit,
+          status,
+          note,
         });
 
         toast.show('Thành công', `Đã tạo đơn hàng mới mã ${created.id}`, 'success');
@@ -390,12 +718,7 @@ export class OrderFormPage {
 
       this.onNavigate('orders');
     } catch (err) {
-      console.error('Lỗi khi lưu đơn:', err);
-      toast.show(
-        'Lỗi lưu đơn hàng',
-        err instanceof Error ? err.message : 'Có lỗi xảy ra khi lưu dữ liệu.',
-        'error'
-      );
+      toast.show('Lỗi', err instanceof Error ? err.message : String(err), 'error');
       submitBtn.disabled = false;
     }
   }

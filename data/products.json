@@ -1,0 +1,90 @@
+[
+  {
+    "id": "BTT-01",
+    "name": "Thập cẩm gà quay vi cá",
+    "type": "baked",
+    "eggCount": 2,
+    "weight": 200,
+    "unitPrice": 110000,
+    "costPrice": 65000,
+    "isAvailable": true,
+    "description": "Nhân thập cẩm truyền thống kết hợp gà quay, vi cá và 2 lòng đỏ trứng muối bùi béo."
+  },
+  {
+    "id": "BTT-02",
+    "name": "Thập cẩm lạp xưởng ngũ hạt",
+    "type": "baked",
+    "eggCount": 1,
+    "weight": 180,
+    "unitPrice": 90000,
+    "costPrice": 52000,
+    "isAvailable": true,
+    "description": "Lạp xưởng Mai Quế Lộ, hạt điều, hạt sen, hạt dưa, vừng rang thơm lừng."
+  },
+  {
+    "id": "BTT-03",
+    "name": "Đậu xanh hạt sen",
+    "type": "baked",
+    "eggCount": 1,
+    "weight": 180,
+    "unitPrice": 75000,
+    "costPrice": 40000,
+    "isAvailable": true,
+    "description": "Đậu xanh sên mịn màng, ngọt thanh, kèm hạt sen nguyên hạt và 1 trứng muối."
+  },
+  {
+    "id": "BTT-04",
+    "name": "Khoai môn sữa dừa",
+    "type": "baked",
+    "eggCount": 1,
+    "weight": 180,
+    "unitPrice": 75000,
+    "costPrice": 42000,
+    "isAvailable": true,
+    "description": "Khoai môn dẻo bùi thoang thoảng hương nước cốt dừa tự nhiên."
+  },
+  {
+    "id": "BTT-05",
+    "name": "Trà xanh matcha đậu đỏ",
+    "type": "baked",
+    "eggCount": 1,
+    "weight": 180,
+    "unitPrice": 80000,
+    "costPrice": 45000,
+    "isAvailable": true,
+    "description": "Bột trà xanh Nhật Bản thơm dịu bọc nhân đậu đỏ bùi ngọt."
+  },
+  {
+    "id": "BTT-06",
+    "name": "Dẻo hạt sen lá dứa",
+    "type": "snowskin",
+    "eggCount": 1,
+    "weight": 200,
+    "unitPrice": 70000,
+    "costPrice": 38000,
+    "isAvailable": true,
+    "description": "Vỏ dẻo mềm dẻo từ nếp cái hoa vàng, thoảng hương lá dứa thanh khiết."
+  },
+  {
+    "id": "BTT-07",
+    "name": "Dẻo đậu xanh (Chay)",
+    "type": "snowskin",
+    "eggCount": 0,
+    "weight": 180,
+    "unitPrice": 60000,
+    "costPrice": 32000,
+    "isAvailable": true,
+    "description": "Bánh dẻo chay thanh đạm, nhân đậu xanh nguyên chất không trứng."
+  },
+  {
+    "id": "BOX-01",
+    "name": "Hộp quà 4 bánh Cao Cấp MunKek",
+    "type": "box",
+    "eggCount": 0,
+    "weight": 0,
+    "unitPrice": 60000,
+    "costPrice": 35000,
+    "isAvailable": true,
+    "description": "Hộp cứng sang trọng in họa tiết trăng rằm, kèm dao cắt và túi xách lịch sự biếu tặng."
+  }
+]

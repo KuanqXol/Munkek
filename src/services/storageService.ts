@@ -1,276 +1,387 @@
-import { OrdersDocument, Order, CURRENT_SCHEMA_VERSION } from '../models/Order';
+import { AppConfig, DEFAULT_CONFIG } from '../models/Config';
+import { Product } from '../models/Product';
+import { Order, OrdersDocument, CURRENT_SCHEMA_VERSION } from '../models/Order';
 
-export const APP_DATA_FOLDER_NAME = 'MunKek';
+export const CONFIG_FILE_NAME = 'config.json';
+export const PRODUCTS_FILE_NAME = 'products.json';
 export const ORDERS_FILE_NAME = 'orders.json';
-export const ORDERS_TEMP_FILE_NAME = '.orders.json.tmp';
-export const STORAGE_LOCAL_KEY = 'munkek_orders_data';
+export const CUSTOMERS_FILE_NAME = 'customers.json';
 
-export interface StorageStatus {
-  isTauri: boolean;
-  filePath: string;
-  loadedFrom: 'tauri-fs' | 'browser-localstorage';
-}
+const LOCAL_STORAGE_CONFIG_KEY = 'munkek_app_config';
+const LOCAL_STORAGE_PRODUCTS_KEY = 'munkek_products_data';
+const LOCAL_STORAGE_ORDERS_KEY = 'munkek_orders_data';
 
-/**
- * Check if running inside Tauri environment
- */
 export function isTauriEnvironment(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
-/**
- * Create default empty orders document
- */
-export function createDefaultDocument(): OrdersDocument {
-  return {
-    schemaVersion: CURRENT_SCHEMA_VERSION,
-    appName: 'MunKek',
-    updatedAt: new Date().toISOString(),
-    orders: [],
-  };
-}
-
-/**
- * Migrate document if older schemaVersion is detected
- */
-export function migrateDocument(doc: unknown): OrdersDocument {
-  if (!doc || typeof doc !== 'object') {
-    return createDefaultDocument();
-  }
-
-  const raw = doc as Record<string, unknown>;
-
-  // If old structure was a bare array of orders
-  if (Array.isArray(raw)) {
-    return {
-      schemaVersion: CURRENT_SCHEMA_VERSION,
-      appName: 'MunKek',
-      updatedAt: new Date().toISOString(),
-      orders: raw as Order[],
-    };
-  }
-
-  // Ensure orders array exists
-  const orders: Order[] = Array.isArray(raw.orders) ? (raw.orders as Order[]) : [];
-
-  // Migration logic for future versions (e.g. from version 1 to 2)
-  const schemaVersion = typeof raw.schemaVersion === 'number' ? raw.schemaVersion : 1;
-
-  return {
-    schemaVersion,
-    appName: (raw.appName as string) || 'MunKek',
-    updatedAt: (raw.updatedAt as string) || new Date().toISOString(),
-    orders,
-  };
-}
-
 class StorageService {
-  private cachedDoc: OrdersDocument | null = null;
-  private currentFilePath: string = '';
+  private config: AppConfig = { ...DEFAULT_CONFIG };
+  private isInitialized = false;
 
   /**
-   * Resolve orders.json absolute path in user's OS AppData directory
+   * Initialize storage and load config.json
    */
-  public async getOrdersFilePath(): Promise<string> {
-    if (this.currentFilePath) return this.currentFilePath;
+  public async init(): Promise<AppConfig> {
+    if (this.isInitialized) return this.config;
 
     if (isTauriEnvironment()) {
       try {
-        const { appDataDir, join } = await import('@tauri-apps/api/path');
-        const baseDir = await appDataDir();
-        this.currentFilePath = await join(baseDir, ORDERS_FILE_NAME);
-        return this.currentFilePath;
+        const { exists, readTextFile, writeTextFile } = await import('@tauri-apps/plugin-fs');
+
+        // Look for config.json at root directory
+        const hasRootConfig = await exists(CONFIG_FILE_NAME);
+        if (hasRootConfig) {
+          const raw = await readTextFile(CONFIG_FILE_NAME);
+          const parsed = JSON.parse(raw);
+          this.config = { ...DEFAULT_CONFIG, ...parsed, configPath: CONFIG_FILE_NAME };
+        } else {
+          // If not exists at root, create default config.json
+          this.config = { ...DEFAULT_CONFIG, configPath: CONFIG_FILE_NAME };
+          await writeTextFile(CONFIG_FILE_NAME, JSON.stringify(this.config, null, 2));
+        }
+
+        // Ensure data directory exists
+        await this.ensureDataFolder();
       } catch (err) {
-        console.warn('Could not resolve Tauri appDataDir, falling back', err);
+        console.warn('Tauri FS load config error, falling back to local defaults:', err);
+      }
+    } else {
+      // Browser LocalStorage fallback
+      const stored = localStorage.getItem(LOCAL_STORAGE_CONFIG_KEY);
+      if (stored) {
+        try {
+          this.config = { ...DEFAULT_CONFIG, ...JSON.parse(stored) };
+        } catch {
+          this.config = { ...DEFAULT_CONFIG };
+        }
+      } else {
+        this.config = { ...DEFAULT_CONFIG };
+        localStorage.setItem(LOCAL_STORAGE_CONFIG_KEY, JSON.stringify(this.config));
       }
     }
 
-    this.currentFilePath = `AppData/Roaming/${APP_DATA_FOLDER_NAME}/${ORDERS_FILE_NAME} (Web Mode)`;
-    return this.currentFilePath;
+    this.isInitialized = true;
+    return this.config;
   }
 
   /**
-   * Load orders document from disk (or localStorage fallback in browser)
+   * Ensure data folder and basic template files exist
    */
-  public async loadDocument(): Promise<{ document: OrdersDocument; status: StorageStatus }> {
-    if (isTauriEnvironment()) {
-      try {
-        const { appDataDir, join } = await import('@tauri-apps/api/path');
-        const { exists, readTextFile, writeTextFile, mkdir } = await import('@tauri-apps/plugin-fs');
-
-        const baseDir = await appDataDir();
-        this.currentFilePath = await join(baseDir, ORDERS_FILE_NAME);
-
-        // Ensure AppData directory exists
-        const dirExists = await exists(baseDir);
-        if (!dirExists) {
-          await mkdir(baseDir, { recursive: true });
-        }
-
-        const fileExists = await exists(this.currentFilePath);
-        if (!fileExists) {
-          // File does not exist yet: create fresh default document
-          const defaultDoc = createDefaultDocument();
-          await writeTextFile(this.currentFilePath, JSON.stringify(defaultDoc, null, 2));
-          this.cachedDoc = defaultDoc;
-          return {
-            document: defaultDoc,
-            status: {
-              isTauri: true,
-              filePath: this.currentFilePath,
-              loadedFrom: 'tauri-fs',
-            },
-          };
-        }
-
-        // File exists: read content
-        const rawContent = await readTextFile(this.currentFilePath);
-
-        // Handle empty file
-        if (!rawContent || !rawContent.trim()) {
-          console.warn('orders.json is empty. Initializing default structure.');
-          const defaultDoc = createDefaultDocument();
-          await writeTextFile(this.currentFilePath, JSON.stringify(defaultDoc, null, 2));
-          this.cachedDoc = defaultDoc;
-          return {
-            document: defaultDoc,
-            status: {
-              isTauri: true,
-              filePath: this.currentFilePath,
-              loadedFrom: 'tauri-fs',
-            },
-          };
-        }
-
-        // Parse JSON safely
-        try {
-          const parsed = JSON.parse(rawContent);
-          const migrated = migrateDocument(parsed);
-          this.cachedDoc = migrated;
-          return {
-            document: migrated,
-            status: {
-              isTauri: true,
-              filePath: this.currentFilePath,
-              loadedFrom: 'tauri-fs',
-            },
-          };
-        } catch (parseError) {
-          // JSON parse failed: create safety backup of corrupt file before recovering
-          console.error('orders.json is corrupt, preserving backup...', parseError);
-          const backupPath = await join(
-            baseDir,
-            `orders.corrupt-${Date.now()}.json`
-          );
-          try {
-            await writeTextFile(backupPath, rawContent);
-          } catch (bkErr) {
-            console.error('Failed to create corrupt backup file', bkErr);
-          }
-
-          const defaultDoc = createDefaultDocument();
-          this.cachedDoc = defaultDoc;
-          return {
-            document: defaultDoc,
-            status: {
-              isTauri: true,
-              filePath: this.currentFilePath,
-              loadedFrom: 'tauri-fs',
-            },
-          };
-        }
-      } catch (tauriError) {
-        console.error('Tauri filesystem error, falling back to local storage', tauriError);
-      }
-    }
-
-    // Fallback: Browser LocalStorage (for web dev or testing)
-    const stored = localStorage.getItem(STORAGE_LOCAL_KEY);
-    if (!stored) {
-      const defaultDoc = createDefaultDocument();
-      localStorage.setItem(STORAGE_LOCAL_KEY, JSON.stringify(defaultDoc));
-      this.cachedDoc = defaultDoc;
-      return {
-        document: defaultDoc,
-        status: {
-          isTauri: false,
-          filePath: 'LocalStorage: ' + STORAGE_LOCAL_KEY,
-          loadedFrom: 'browser-localstorage',
-        },
-      };
-    }
+  public async ensureDataFolder(): Promise<void> {
+    if (!isTauriEnvironment()) return;
 
     try {
-      const parsed = JSON.parse(stored);
-      const migrated = migrateDocument(parsed);
-      this.cachedDoc = migrated;
-      return {
-        document: migrated,
-        status: {
-          isTauri: false,
-          filePath: 'LocalStorage: ' + STORAGE_LOCAL_KEY,
-          loadedFrom: 'browser-localstorage',
-        },
-      };
-    } catch {
-      const defaultDoc = createDefaultDocument();
-      this.cachedDoc = defaultDoc;
-      return {
-        document: defaultDoc,
-        status: {
-          isTauri: false,
-          filePath: 'LocalStorage: ' + STORAGE_LOCAL_KEY,
-          loadedFrom: 'browser-localstorage',
-        },
-      };
+      const { exists, mkdir, writeTextFile } = await import('@tauri-apps/plugin-fs');
+      const { join } = await import('@tauri-apps/api/path');
+
+      const dataDir = this.config.dataPath || './data';
+      if (!(await exists(dataDir))) {
+        await mkdir(dataDir, { recursive: true });
+      }
+
+      // Check products.json
+      const productsPath = await join(dataDir, PRODUCTS_FILE_NAME);
+      if (!(await exists(productsPath))) {
+        await writeTextFile(productsPath, JSON.stringify([], null, 2));
+      }
+
+      // Check orders.json
+      const ordersPath = await join(dataDir, ORDERS_FILE_NAME);
+      if (!(await exists(ordersPath))) {
+        const defaultOrdersDoc: OrdersDocument = {
+          schemaVersion: CURRENT_SCHEMA_VERSION,
+          appName: 'MunKek - Tiệm Bánh Trung Thu',
+          updatedAt: new Date().toISOString(),
+          orders: [],
+        };
+        await writeTextFile(ordersPath, JSON.stringify(defaultOrdersDoc, null, 2));
+      }
+
+      // Check backups folder
+      const backupsDir = await join(dataDir, 'backups');
+      if (!(await exists(backupsDir))) {
+        await mkdir(backupsDir, { recursive: true });
+      }
+    } catch (err) {
+      console.warn('Lỗi khi kiểm tra thư mục data:', err);
+    }
+  }
+
+  public getConfig(): AppConfig {
+    return this.config;
+  }
+
+  public async saveConfig(newConfig: Partial<AppConfig>): Promise<void> {
+    this.config = { ...this.config, ...newConfig, lastOpened: new Date().toISOString() };
+
+    if (isTauriEnvironment()) {
+      try {
+        const { writeTextFile } = await import('@tauri-apps/plugin-fs');
+        const targetConfigPath = this.config.configPath || CONFIG_FILE_NAME;
+        await writeTextFile(targetConfigPath, JSON.stringify(this.config, null, 2));
+      } catch (err) {
+        console.error('Không thể ghi file config.json:', err);
+      }
+    } else {
+      localStorage.setItem(LOCAL_STORAGE_CONFIG_KEY, JSON.stringify(this.config));
     }
   }
 
   /**
-   * Save orders document atomically (write to temp file then rename/replace)
+   * Set new dataPath and update config
    */
-  public async saveDocument(doc: OrdersDocument): Promise<void> {
-    doc.updatedAt = new Date().toISOString();
+  public async setDataPath(newPath: string): Promise<void> {
+    await this.saveConfig({ dataPath: newPath });
+    await this.ensureDataFolder();
+  }
+
+  public getDataFolderPath(): string {
+    return this.config.dataPath || './data';
+  }
+
+  public getConfigFilePath(): string {
+    return this.config.configPath || CONFIG_FILE_NAME;
+  }
+
+  public async getOrdersFilePath(): Promise<string> {
+    const dataDir = this.getDataFolderPath();
+    if (isTauriEnvironment()) {
+      try {
+        const { join } = await import('@tauri-apps/api/path');
+        return await join(dataDir, ORDERS_FILE_NAME);
+      } catch {
+        return `${dataDir}/${ORDERS_FILE_NAME}`;
+      }
+    }
+    return `${dataDir}/${ORDERS_FILE_NAME}`;
+  }
+
+  public async getProductsFilePath(): Promise<string> {
+    const dataDir = this.getDataFolderPath();
+    if (isTauriEnvironment()) {
+      try {
+        const { join } = await import('@tauri-apps/api/path');
+        return await join(dataDir, PRODUCTS_FILE_NAME);
+      } catch {
+        return `${dataDir}/${PRODUCTS_FILE_NAME}`;
+      }
+    }
+    return `${dataDir}/${PRODUCTS_FILE_NAME}`;
+  }
+
+  /**
+   * Load Products from data/products.json
+   */
+  public async loadProducts(): Promise<Product[]> {
+    await this.init();
+
+    if (isTauriEnvironment()) {
+      try {
+        const { exists, readTextFile } = await import('@tauri-apps/plugin-fs');
+        const { join } = await import('@tauri-apps/api/path');
+
+        const filePath = await join(this.config.dataPath || './data', PRODUCTS_FILE_NAME);
+        if (await exists(filePath)) {
+          const raw = await readTextFile(filePath);
+          if (raw && raw.trim()) {
+            return JSON.parse(raw);
+          }
+        }
+      } catch (err) {
+        console.warn('Không thể đọc file products.json từ disk:', err);
+      }
+    }
+
+    // Fallback: localStorage
+    const stored = localStorage.getItem(LOCAL_STORAGE_PRODUCTS_KEY);
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      } catch {
+        // continue to fetch
+      }
+    }
+
+    // If empty in browser preview, seed from ./data/products.json
+    try {
+      const res = await fetch('./data/products.json');
+      if (res.ok) {
+        const seed = await res.json();
+        if (Array.isArray(seed) && seed.length > 0) {
+          localStorage.setItem(LOCAL_STORAGE_PRODUCTS_KEY, JSON.stringify(seed));
+          return seed;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return [];
+  }
+
+  /**
+   * Save Products to data/products.json (Atomic write via tmp file)
+   */
+  public async saveProducts(products: Product[]): Promise<void> {
+    const serialized = JSON.stringify(products, null, 2);
+
+    if (isTauriEnvironment()) {
+      try {
+        const { writeTextFile, rename } = await import('@tauri-apps/plugin-fs');
+        const { join } = await import('@tauri-apps/api/path');
+
+        const dataDir = this.config.dataPath || './data';
+        const finalPath = await join(dataDir, PRODUCTS_FILE_NAME);
+        const tempPath = await join(dataDir, `.${PRODUCTS_FILE_NAME}.tmp`);
+
+        await writeTextFile(tempPath, serialized);
+        await rename(tempPath, finalPath);
+        return;
+      } catch (err) {
+        console.error('Lỗi khi lưu products.json:', err);
+      }
+    }
+
+    localStorage.setItem(LOCAL_STORAGE_PRODUCTS_KEY, serialized);
+  }
+
+  /**
+   * Load Orders from data/orders.json
+   */
+  public async loadOrders(): Promise<Order[]> {
+    await this.init();
+
+    if (isTauriEnvironment()) {
+      try {
+        const { exists, readTextFile } = await import('@tauri-apps/plugin-fs');
+        const { join } = await import('@tauri-apps/api/path');
+
+        const filePath = await join(this.config.dataPath || './data', ORDERS_FILE_NAME);
+        if (await exists(filePath)) {
+          const raw = await readTextFile(filePath);
+          if (raw && raw.trim()) {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) return parsed;
+            if (parsed && Array.isArray(parsed.orders)) return parsed.orders;
+          }
+        }
+      } catch (err) {
+        console.warn('Không thể đọc file orders.json từ disk:', err);
+      }
+    }
+
+    // Fallback: localStorage
+    const stored = localStorage.getItem(LOCAL_STORAGE_ORDERS_KEY);
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) return parsed;
+        if (parsed && Array.isArray(parsed.orders)) return parsed.orders;
+      } catch {
+        // continue to fetch
+      }
+    }
+
+    // If empty in browser preview, seed from ./data/orders.json
+    try {
+      const res = await fetch('./data/orders.json');
+      if (res.ok) {
+        const seed = await res.json();
+        if (seed && Array.isArray(seed.orders)) {
+          localStorage.setItem(LOCAL_STORAGE_ORDERS_KEY, JSON.stringify(seed));
+          return seed.orders;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return [];
+  }
+
+  /**
+   * Save Orders to data/orders.json (Atomic write)
+   */
+  public async saveOrders(orders: Order[]): Promise<void> {
+    const doc: OrdersDocument = {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      appName: this.config.shopName || 'MunKek - Tiệm Bánh Trung Thu',
+      updatedAt: new Date().toISOString(),
+      orders,
+    };
     const serialized = JSON.stringify(doc, null, 2);
 
     if (isTauriEnvironment()) {
       try {
-        const { appDataDir, join } = await import('@tauri-apps/api/path');
-        const { writeTextFile, rename, exists, mkdir } = await import('@tauri-apps/plugin-fs');
+        const { writeTextFile, rename } = await import('@tauri-apps/plugin-fs');
+        const { join } = await import('@tauri-apps/api/path');
 
-        const baseDir = await appDataDir();
-        if (!(await exists(baseDir))) {
-          await mkdir(baseDir, { recursive: true });
-        }
+        const dataDir = this.config.dataPath || './data';
+        const finalPath = await join(dataDir, ORDERS_FILE_NAME);
+        const tempPath = await join(dataDir, `.${ORDERS_FILE_NAME}.tmp`);
 
-        const finalPath = await join(baseDir, ORDERS_FILE_NAME);
-        const tempPath = await join(baseDir, ORDERS_TEMP_FILE_NAME);
-
-        // Atomic write strategy:
-        // 1. Write full content to temporary file
         await writeTextFile(tempPath, serialized);
-        // 2. Atomically rename/replace temp file to final target file
-        // On Windows and POSIX, renaming within same filesystem/directory is atomic
         await rename(tempPath, finalPath);
-
-        this.cachedDoc = doc;
-        this.currentFilePath = finalPath;
         return;
       } catch (err) {
-        console.error('Failed to save document via Tauri FS, using browser fallback', err);
+        console.error('Lỗi khi lưu orders.json:', err);
       }
     }
 
-    // Fallback save in localStorage
-    localStorage.setItem(STORAGE_LOCAL_KEY, serialized);
-    this.cachedDoc = doc;
+    localStorage.setItem(LOCAL_STORAGE_ORDERS_KEY, serialized);
   }
 
   /**
-   * Get cached document synchronously if already loaded
+   * Pick custom data folder via native folder dialog
    */
-  public getCachedDocument(): OrdersDocument | null {
-    return this.cachedDoc;
+  public async pickDataFolder(): Promise<string | null> {
+    if (isTauriEnvironment()) {
+      try {
+        const { open } = await import('@tauri-apps/plugin-dialog');
+        const selected = await open({
+          directory: true,
+          multiple: false,
+          title: 'Chọn thư mục lưu trữ dữ liệu Bánh Trung Thu (data)',
+        });
+        if (selected && typeof selected === 'string') {
+          await this.setDataPath(selected);
+          return selected;
+        }
+      } catch (err) {
+        console.error('Lỗi khi chọn thư mục data:', err);
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Pick custom config file via native file dialog
+   */
+  public async pickConfigFile(): Promise<string | null> {
+    if (isTauriEnvironment()) {
+      try {
+        const { open } = await import('@tauri-apps/plugin-dialog');
+        const { readTextFile } = await import('@tauri-apps/plugin-fs');
+
+        const selected = await open({
+          directory: false,
+          multiple: false,
+          title: 'Chọn file cấu hình (config.json)',
+          filters: [{ name: 'MunKek Config', extensions: ['json'] }],
+        });
+
+        if (selected && typeof selected === 'string') {
+          const raw = await readTextFile(selected);
+          const parsed = JSON.parse(raw);
+          this.config = { ...DEFAULT_CONFIG, ...parsed, configPath: selected };
+          await this.ensureDataFolder();
+          return selected;
+        }
+      } catch (err) {
+        console.error('Lỗi khi nạp file config:', err);
+      }
+    }
+    return null;
   }
 }
 
