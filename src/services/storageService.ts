@@ -1,6 +1,7 @@
 import { type AppConfig, DEFAULT_CONFIG } from '../models/Config.ts';
 import type { Product } from '../models/Product.ts';
 import { type Order, type OrdersDocument, CURRENT_SCHEMA_VERSION, normalizeOrder } from '../models/Order.ts';
+import { DEFAULT_SEED_CUSTOMERS } from '../models/Customer.ts';
 
 export const CONFIG_FILE_NAME = 'config.json';
 export const APP_CONFIG_FILE_NAME = 'munkek-config.json';
@@ -134,6 +135,21 @@ class StorageService {
 
   public getConfigFilePath(): string {
     return this.config.configPath || CONFIG_FILE_NAME;
+  }
+
+  public async getDefaultSafeDataFolder(): Promise<string> {
+    if (isTauriEnvironment()) {
+      try {
+        const { documentDir, join } = await import('@tauri-apps/api/path');
+        const docDir = await documentDir();
+        if (docDir) {
+          return await join(docDir, 'MunKekData');
+        }
+      } catch (err) {
+        console.warn('Could not resolve documentDir:', err);
+      }
+    }
+    return './data';
   }
 
   /**
@@ -282,7 +298,9 @@ class StorageService {
       await writeTextFile(probePath, 'ok');
       await remove(probePath);
     } catch (err) {
-      throw new Error(`Thư mục "${folderPath}" không có quyền ghi dữ liệu. Vui lòng chọn thư mục khác.`);
+      console.error('Probe write test failed for folder:', folderPath, err);
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(`Không thể ghi dữ liệu vào thư mục "${folderPath}" (${detail}). Vui lòng chọn thư mục khác.`);
     }
 
     this.config.dataPath = folderPath;
@@ -353,8 +371,13 @@ class StorageService {
     // Check products.json
     const productsPath = await join(dataDir, PRODUCTS_FILE_NAME);
     if (!(await exists(productsPath))) {
-      // Initialize with default empty array
-      await writeTextFile(productsPath, JSON.stringify([], null, 2));
+      await writeTextFile(productsPath, JSON.stringify(DEFAULT_SEED_PRODUCTS, null, 2));
+    }
+
+    // Check customers.json
+    const customersPath = await join(dataDir, CUSTOMERS_FILE_NAME);
+    if (!(await exists(customersPath))) {
+      await writeTextFile(customersPath, JSON.stringify(DEFAULT_SEED_CUSTOMERS, null, 2));
     }
 
     // Check orders.json

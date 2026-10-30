@@ -1,48 +1,11 @@
-import type { Customer } from '../models/Customer.ts';
+import { type Customer, DEFAULT_SEED_CUSTOMERS } from '../models/Customer.ts';
 import { isTauriEnvironment, storageService } from './storageService.ts';
 import { removeVietnameseTones } from '../utils/formatters.ts';
 
 export const CUSTOMERS_FILE_NAME = 'customers.json';
 const LOCAL_STORAGE_CUSTOMERS_KEY = 'munkek_customers_data';
 
-const DEFAULT_SEED_CUSTOMERS: Customer[] = [
-  {
-    id: 'KH-0001',
-    name: 'Chị Mai (Hàng xóm)',
-    phone: '0901234567',
-    address: 'Nhà số 12 cùng ngõ',
-    note: 'Khách quen, thích ăn thập cẩm nhiều nhân, ít ngọt',
-    createdAt: '2026-09-15T08:00:00.000Z',
-    updatedAt: '2026-09-15T08:00:00.000Z',
-  },
-  {
-    id: 'KH-0002',
-    name: 'Anh Tuấn (Công ty Techcom)',
-    phone: '0987654321',
-    address: 'Tòa nhà Keangnam, Cầu Giấy, Hà Nội',
-    note: 'Đặt set hộp quà biếu đối tác, yêu cầu đóng hộp lịch sự',
-    createdAt: '2026-09-20T10:30:00.000Z',
-    updatedAt: '2026-09-20T10:30:00.000Z',
-  },
-  {
-    id: 'KH-0003',
-    name: 'Cô Lan (Hội phụ nữ)',
-    phone: '0912888999',
-    address: 'Tổ dân phố 5, Phường Kim Mã',
-    note: 'Thích bánh dẻo chay đậu xanh và hạt sen lá dứa',
-    createdAt: '2026-09-25T14:15:00.000Z',
-    updatedAt: '2026-09-25T14:15:00.000Z',
-  },
-  {
-    id: 'KH-0004',
-    name: 'Em Trang (Bạn đại học)',
-    phone: '0977112233',
-    address: 'Chung cư Vinhomes Smart City',
-    note: 'Mê bánh matcha trà xanh đậu đỏ',
-    createdAt: '2026-09-28T16:00:00.000Z',
-    updatedAt: '2026-09-28T16:00:00.000Z',
-  },
-];
+export { DEFAULT_SEED_CUSTOMERS };
 
 class CustomerService {
   private customers: Customer[] = [];

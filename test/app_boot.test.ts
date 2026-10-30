@@ -74,5 +74,15 @@ describe('Application Lifecycle & Bootstrap Verification', () => {
     assert.ok(fetched);
     assert.equal(fetched?.id, newOrder.id);
   });
+
+  test('setupDataFolder configures and returns safe default directory', async () => {
+    const { storageService } = await import('../src/services/storageService.ts');
+    const defaultFolder = await storageService.getDefaultSafeDataFolder();
+    assert.ok(defaultFolder && typeof defaultFolder === 'string');
+
+    await storageService.setupDataFolder('D:/TestMunKekData');
+    assert.equal(storageService.getDataFolderPath(), 'D:/TestMunKekData');
+    assert.equal(storageService.getStatus(), 'READY');
+  });
 });
 

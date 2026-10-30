@@ -36,12 +36,12 @@ class MunKekApp {
       const initResult = await storageService.init();
 
       if (initResult.status === 'NEEDS_SETUP') {
-        this.renderSetupScreen();
+        await this.renderSetupScreen();
         return;
       }
 
       if (initResult.status === 'UNAVAILABLE') {
-        this.renderRecoveryScreen(initResult.message || 'Không thể truy cập thư mục dữ liệu.');
+        await this.renderRecoveryScreen(initResult.message || 'Không thể truy cập thư mục dữ liệu.');
         return;
       }
 
@@ -73,7 +73,9 @@ class MunKekApp {
   /**
    * First Launch Setup Screen: Friendly, simple directory selection for non-tech user
    */
-  private renderSetupScreen(): void {
+  private async renderSetupScreen(): Promise<void> {
+    const defaultFolder = await storageService.getDefaultSafeDataFolder();
+
     this.appRoot.innerHTML = `
       <div class="onboarding-container">
         <div class="onboarding-card">
@@ -88,59 +90,131 @@ class MunKekApp {
           <h2 style="font-size: 18px; font-weight: 700; color: var(--text-primary); margin-bottom: 8px;">
             Chào mừng bạn đến với MunKek!
           </h2>
-          <p style="font-size: 14px; color: var(--text-secondary); line-height: 1.6; margin-bottom: 20px;">
-            Để bảo toàn toàn bộ đơn hàng và danh mục bánh khi bạn cập nhật phần mềm, vui lòng chọn một thư mục lưu trữ dữ liệu trên máy tính. Bạn chỉ cần chọn một lần duy nhất.
+          <p style="font-size: 14px; color: var(--text-secondary); line-height: 1.6; margin-bottom: 18px;">
+            Để bảo toàn toàn bộ đơn hàng và danh mục bánh khi cập nhật phần mềm, vui lòng chọn hoặc nhập thư mục lưu dữ liệu trên máy tính.
           </p>
 
-          <div style="background: #faf8f5; border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 16px; margin-bottom: 24px;">
+          <div style="background: #faf8f5; border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 14px 16px; margin-bottom: 20px;">
             <div style="font-size: 13px; font-weight: 700; color: var(--primary); margin-bottom: 4px;">
               🛡️ An toàn dữ liệu tuyệt đối:
             </div>
-            <div style="font-size: 13px; color: var(--text-secondary); line-height: 1.5;">
-              Bạn có thể chọn một thư mục bất kỳ (ví dụ trong ổ <code>D:</code> hoặc <code>Documents</code>). Các bản cập nhật sau này từ GitHub sẽ không bao giờ làm mất dữ liệu của bạn.
+            <div style="font-size: 12px; color: var(--text-secondary); line-height: 1.5;">
+              Thư mục này lưu trữ file đơn hàng (orders.json) và menu bánh (products.json). Các bản cập nhật sau này từ GitHub sẽ không bao giờ làm mất dữ liệu của bạn.
             </div>
           </div>
 
-          <div style="display: flex; flex-direction: column; gap: 12px;">
-            <button class="btn btn-primary btn-lg" id="btn-setup-pick-folder" style="width: 100%;">
-              <span>📂</span> Chọn thư mục lưu trữ dữ liệu
+          <!-- Input + Browse Box -->
+          <div style="margin-bottom: 16px;">
+            <label style="display: block; font-size: 13px; font-weight: 700; color: var(--text-primary); margin-bottom: 6px;">
+              Đường dẫn thư mục dữ liệu:
+            </label>
+            <div style="display: flex; gap: 8px;">
+              <input
+                type="text"
+                id="setup-folder-input"
+                class="form-control"
+                style="flex: 1; font-family: monospace; font-size: 13px;"
+                value="${escapeHtml(defaultFolder)}"
+                placeholder="Ví dụ: D:\\MunKekData hoặc C:\\Users\\...\\MunKekData"
+              />
+              <button class="btn btn-secondary" id="btn-setup-browse" style="white-space: nowrap; flex-shrink: 0;" type="button">
+                <span>📂</span> Duyệt...
+              </button>
+            </div>
+            <p style="font-size: 11px; color: var(--text-muted); margin-top: 5px;">
+              Bạn có thể nhấn "Duyệt..." để chọn thư mục hoặc tự nhập/dán đường dẫn vào ô trên.
+            </p>
+          </div>
+
+          <!-- Error Alert Box -->
+          <div id="setup-error-box" style="display: none; background: #fef2f2; border: 1px solid #fecaca; border-radius: var(--radius-sm); padding: 12px 14px; margin-bottom: 16px; color: #991b1b; font-size: 13px; line-height: 1.5;">
+          </div>
+
+          <!-- Action Buttons -->
+          <div style="display: flex; flex-direction: column; gap: 10px;">
+            <button class="btn btn-primary btn-lg" id="btn-setup-confirm" style="width: 100%;" type="button">
+              <span>🚀</span> Xác nhận & Bắt đầu sử dụng
             </button>
-            <button class="btn btn-secondary" id="btn-setup-use-default" style="width: 100%;">
-              Sử dụng thư mục mặc định (./data)
+            <button class="btn btn-secondary" id="btn-setup-use-default" style="width: 100%;" type="button">
+              <span>📁</span> Tự động tạo thư mục an toàn (${escapeHtml(defaultFolder)})
             </button>
           </div>
         </div>
       </div>
     `;
 
-    this.appRoot.querySelector('#btn-setup-pick-folder')?.addEventListener('click', async () => {
+    const folderInput = this.appRoot.querySelector('#setup-folder-input') as HTMLInputElement;
+    const browseBtn = this.appRoot.querySelector('#btn-setup-browse');
+    const confirmBtn = this.appRoot.querySelector('#btn-setup-confirm') as HTMLButtonElement;
+    const defaultBtn = this.appRoot.querySelector('#btn-setup-use-default') as HTMLButtonElement;
+    const errorBox = this.appRoot.querySelector('#setup-error-box') as HTMLElement;
+
+    browseBtn?.addEventListener('click', async () => {
       try {
-        const selected = await storageService.pickDataFolder();
-        if (selected) {
-          toast.show('Thành công', `Đã kết nối thư mục dữ liệu: ${selected}`, 'success');
-          await this.loadAndLaunch();
+        const { open } = await import('@tauri-apps/plugin-dialog');
+        const selected = await open({
+          directory: true,
+          multiple: false,
+          title: 'Chọn thư mục lưu trữ dữ liệu MunKek (data)',
+        });
+        const folder = Array.isArray(selected) ? selected[0] : selected;
+        if (folder && typeof folder === 'string') {
+          folderInput.value = folder;
+          errorBox.style.display = 'none';
         }
       } catch (err) {
-        toast.show('Thông báo', String(err instanceof Error ? err.message : err), 'error');
+        console.error('Error opening folder picker:', err);
+        errorBox.textContent = `Lỗi mở cửa sổ chọn thư mục: ${err instanceof Error ? err.message : String(err)}`;
+        errorBox.style.display = 'block';
       }
     });
 
-    this.appRoot.querySelector('#btn-setup-use-default')?.addEventListener('click', async () => {
+    const handleConnect = async (targetPath: string) => {
+      const cleanPath = (targetPath || '').trim();
+      if (!cleanPath) {
+        errorBox.textContent = 'Vui lòng nhập hoặc chọn một đường dẫn thư mục dữ liệu hợp lệ.';
+        errorBox.style.display = 'block';
+        return;
+      }
+
+      errorBox.style.display = 'none';
+      if (confirmBtn) {
+        confirmBtn.disabled = true;
+        confirmBtn.innerHTML = '<span>⏳</span> Đang kết nối thư mục...';
+      }
+      if (defaultBtn) defaultBtn.disabled = true;
+
       try {
-        await storageService.setupDataFolder('./data');
-        toast.show('Thành công', 'Đã khởi tạo thư mục dữ liệu mặc định.', 'success');
+        await storageService.setupDataFolder(cleanPath);
+        toast.show('Thành công', `Đã kết nối thư mục dữ liệu: ${cleanPath}`, 'success');
         await this.loadAndLaunch();
       } catch (err) {
-        toast.show('Lỗi', String(err instanceof Error ? err.message : err), 'error');
+        console.error('Setup folder error:', err);
+        errorBox.textContent = `Không thể kết nối thư mục: ${err instanceof Error ? err.message : String(err)}`;
+        errorBox.style.display = 'block';
+        if (confirmBtn) {
+          confirmBtn.disabled = false;
+          confirmBtn.innerHTML = '<span>🚀</span> Xác nhận & Bắt đầu sử dụng';
+        }
+        if (defaultBtn) defaultBtn.disabled = false;
       }
+    };
+
+    confirmBtn?.addEventListener('click', () => {
+      handleConnect(folderInput.value);
+    });
+
+    defaultBtn?.addEventListener('click', () => {
+      handleConnect(defaultFolder);
     });
   }
 
   /**
    * Recovery Screen: Shown when configured data folder is missing or disconnected
    */
-  private renderRecoveryScreen(message: string): void {
+  private async renderRecoveryScreen(message: string): Promise<void> {
     const currentPath = storageService.getDataFolderPath();
+    const defaultFolder = await storageService.getDefaultSafeDataFolder();
 
     this.appRoot.innerHTML = `
       <div class="onboarding-container">
@@ -159,49 +233,99 @@ class MunKekApp {
             ${escapeHtml(message)}
           </p>
 
-          <div style="background: #fafaf9; border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 10px 14px; font-family: monospace; font-size: 12px; word-break: break-all; color: var(--text-primary); margin-bottom: 20px;">
-            Đường dẫn: ${escapeHtml(currentPath)}
+          <div style="margin-bottom: 16px;">
+            <label style="display: block; font-size: 13px; font-weight: 700; color: var(--text-primary); margin-bottom: 6px;">
+              Đường dẫn thư mục hiện tại:
+            </label>
+            <div style="display: flex; gap: 8px;">
+              <input
+                type="text"
+                id="recovery-folder-input"
+                class="form-control"
+                style="flex: 1; font-family: monospace; font-size: 13px;"
+                value="${escapeHtml(currentPath)}"
+                placeholder="Nhập đường dẫn thư mục..."
+              />
+              <button class="btn btn-secondary" id="btn-recovery-browse" style="white-space: nowrap; flex-shrink: 0;" type="button">
+                <span>📂</span> Duyệt...
+              </button>
+            </div>
+          </div>
+
+          <div id="recovery-error-box" style="display: none; background: #fef2f2; border: 1px solid #fecaca; border-radius: var(--radius-sm); padding: 12px 14px; margin-bottom: 16px; color: #991b1b; font-size: 13px;">
           </div>
 
           <div style="display: flex; flex-direction: column; gap: 10px;">
-            <button class="btn btn-primary" id="btn-recovery-retry" style="width: 100%;">
-              <span>🔄</span> Thử kết nối lại
+            <button class="btn btn-primary" id="btn-recovery-confirm" style="width: 100%;" type="button">
+              <span>🔄</span> Kết nối thư mục này
             </button>
-            <button class="btn btn-secondary" id="btn-recovery-pick" style="width: 100%;">
-              <span>📂</span> Chọn thư mục dữ liệu khác
-            </button>
-            <button class="btn btn-secondary" id="btn-recovery-default" style="width: 100%;">
-              Sử dụng thư mục mặc định (./data)
+            <button class="btn btn-secondary" id="btn-recovery-default" style="width: 100%;" type="button">
+              <span>📁</span> Chuyển sang thư mục an toàn (${escapeHtml(defaultFolder)})
             </button>
           </div>
         </div>
       </div>
     `;
 
-    this.appRoot.querySelector('#btn-recovery-retry')?.addEventListener('click', () => {
-      window.location.reload();
-    });
+    const folderInput = this.appRoot.querySelector('#recovery-folder-input') as HTMLInputElement;
+    const browseBtn = this.appRoot.querySelector('#btn-recovery-browse');
+    const confirmBtn = this.appRoot.querySelector('#btn-recovery-confirm') as HTMLButtonElement;
+    const defaultBtn = this.appRoot.querySelector('#btn-recovery-default') as HTMLButtonElement;
+    const errorBox = this.appRoot.querySelector('#recovery-error-box') as HTMLElement;
 
-    this.appRoot.querySelector('#btn-recovery-pick')?.addEventListener('click', async () => {
+    browseBtn?.addEventListener('click', async () => {
       try {
-        const selected = await storageService.pickDataFolder();
-        if (selected) {
-          toast.show('Thành công', 'Đã đổi thư mục dữ liệu thành công.', 'success');
-          await this.loadAndLaunch();
+        const { open } = await import('@tauri-apps/plugin-dialog');
+        const selected = await open({
+          directory: true,
+          multiple: false,
+          title: 'Chọn thư mục lưu trữ dữ liệu MunKek',
+        });
+        const folder = Array.isArray(selected) ? selected[0] : selected;
+        if (folder && typeof folder === 'string') {
+          folderInput.value = folder;
+          errorBox.style.display = 'none';
         }
       } catch (err) {
-        toast.show('Lỗi', String(err instanceof Error ? err.message : err), 'error');
+        errorBox.textContent = `Lỗi mở cửa sổ chọn: ${err instanceof Error ? err.message : String(err)}`;
+        errorBox.style.display = 'block';
       }
     });
 
-    this.appRoot.querySelector('#btn-recovery-default')?.addEventListener('click', async () => {
+    const handleRecovery = async (targetPath: string) => {
+      const cleanPath = (targetPath || '').trim();
+      if (!cleanPath) {
+        errorBox.textContent = 'Vui lòng nhập đường dẫn thư mục hợp lệ.';
+        errorBox.style.display = 'block';
+        return;
+      }
+
+      errorBox.style.display = 'none';
+      if (confirmBtn) {
+        confirmBtn.disabled = true;
+        confirmBtn.innerHTML = '<span>⏳</span> Đang kiểm tra...';
+      }
+
       try {
-        await storageService.setupDataFolder('./data');
-        toast.show('Thành công', 'Đã kết nối lại thư mục mặc định.', 'success');
+        await storageService.setupDataFolder(cleanPath);
+        toast.show('Thành công', 'Đã kết nối lại thư mục dữ liệu.', 'success');
         await this.loadAndLaunch();
       } catch (err) {
-        toast.show('Lỗi', String(err instanceof Error ? err.message : err), 'error');
+        errorBox.textContent = `Không thể kết nối: ${err instanceof Error ? err.message : String(err)}`;
+        errorBox.style.display = 'block';
+        if (confirmBtn) {
+          confirmBtn.disabled = false;
+          confirmBtn.innerHTML = '<span>🔄</span> Kết nối thư mục này';
+        }
       }
+    };
+
+    confirmBtn?.addEventListener('click', () => {
+      handleRecovery(folderInput.value);
+    });
+
+    defaultBtn?.addEventListener('click', () => {
+      handleRecovery(defaultFolder);
     });
   }
 
