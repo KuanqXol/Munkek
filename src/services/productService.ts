@@ -1,5 +1,6 @@
-import { Product, ProductType } from '../models/Product';
-import { storageService } from './storageService';
+import type { Product, ProductType } from '../models/Product.ts';
+import { storageService } from './storageService.ts';
+import { removeVietnameseTones } from '../utils/formatters.ts';
 
 class ProductService {
   private products: Product[] = [];
@@ -22,12 +23,22 @@ class ProductService {
     return [...this.products];
   }
 
+  /**
+   * Get all visible products for the main POS screen
+   */
+  public async getVisibleProducts(): Promise<Product[]> {
+    await this.ensureLoaded();
+    return this.products
+      .filter((p) => p.isVisible !== false)
+      .sort((a, b) => (a.sortOrder ?? 999) - (b.sortOrder ?? 999));
+  }
+
   public async getProductById(id: string): Promise<Product | undefined> {
     await this.ensureLoaded();
     return this.products.find((p) => p.id === id);
   }
 
-  public generateNextId(type: ProductType): string {
+  public generateNextId(type: ProductType = 'baked'): string {
     const prefix = type === 'box' ? 'BOX' : 'BTT';
     let max = 0;
     const regex = new RegExp(`^${prefix}-(\\d+)$`, 'i');
@@ -42,28 +53,23 @@ class ProductService {
     return `${prefix}-${String(max + 1).padStart(2, '0')}`;
   }
 
-  public async addProduct(input: {
-    name: string;
-    type: ProductType;
-    eggCount: number;
-    weight: number;
-    unitPrice: number;
-    costPrice?: number;
-    isAvailable: boolean;
-    description?: string;
-  }): Promise<Product> {
+  public async addProduct(input: Partial<Product> & { name: string; unitPrice: number }): Promise<Product> {
     await this.ensureLoaded();
 
     const newProduct: Product = {
-      id: this.generateNextId(input.type),
+      id: input.id || this.generateNextId(input.type || 'baked'),
       name: input.name.trim(),
-      type: input.type,
-      eggCount: Math.max(0, Number(input.eggCount) || 0),
-      weight: Math.max(0, Number(input.weight) || 0),
       unitPrice: Math.max(0, Number(input.unitPrice) || 0),
-      costPrice: input.costPrice ? Math.max(0, Number(input.costPrice)) : undefined,
+      costPrice: input.costPrice !== undefined ? Math.max(0, Number(input.costPrice)) : undefined,
+      imageUrl: input.imageUrl ? input.imageUrl.trim() : undefined,
+      category: input.category ? input.category.trim() : undefined,
+      type: input.type || 'baked',
+      eggCount: input.eggCount !== undefined ? Math.max(0, Number(input.eggCount)) : undefined,
+      weight: input.weight !== undefined ? Math.max(0, Number(input.weight)) : undefined,
       isAvailable: input.isAvailable !== false,
-      description: (input.description || '').trim(),
+      isVisible: input.isVisible !== false,
+      sortOrder: input.sortOrder ?? this.products.length + 1,
+      description: input.description ? input.description.trim() : undefined,
     };
 
     this.products.push(newProduct);
@@ -101,24 +107,36 @@ class ProductService {
     return true;
   }
 
-  public filterProducts(query?: string, type?: string): Product[] {
-    let list = [...this.products];
+  public async toggleVisibility(id: string): Promise<boolean> {
+    await this.ensureLoaded();
+    const p = this.products.find((prod) => prod.id === id);
+    if (!p) return false;
+    p.isVisible = p.isVisible === false ? true : false;
+    await storageService.saveProducts(this.products);
+    return p.isVisible;
+  }
 
-    if (query && query.trim()) {
-      const q = query.trim().toLowerCase();
-      list = list.filter(
-        (p) =>
-          p.name.toLowerCase().includes(q) ||
-          p.id.toLowerCase().includes(q) ||
-          (p.description && p.description.toLowerCase().includes(q))
-      );
-    }
+  /**
+   * Search and filter products with Vietnamese unaccented search and dynamic category
+   */
+  public filterProducts(searchQuery: string, category = 'all'): Product[] {
+    const qClean = removeVietnameseTones(searchQuery.trim());
 
-    if (type && type !== 'all') {
-      list = list.filter((p) => p.type === type);
-    }
+    return this.products.filter((p) => {
+      if (category !== 'all') {
+        const matchesCategory = p.category && p.category.toLowerCase() === category.toLowerCase();
+        const matchesType = p.type && p.type.toLowerCase() === category.toLowerCase();
+        if (!matchesCategory && !matchesType) {
+          return false;
+        }
+      }
+      if (!qClean) return true;
 
-    return list;
+      const nameClean = removeVietnameseTones(p.name);
+      const idClean = p.id.toLowerCase();
+      const descClean = p.description ? removeVietnameseTones(p.description) : '';
+      return nameClean.includes(qClean) || idClean.includes(qClean) || descClean.includes(qClean);
+    });
   }
 }
 

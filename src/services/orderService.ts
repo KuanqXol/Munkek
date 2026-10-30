@@ -1,72 +1,42 @@
-import { Order, OrderItem, OrderStatus, DiscountType, CustomerInfo } from '../models/Order';
-import { storageService } from './storageService';
+import {
+  type Order,
+  type OrderItem,
+  type DiscountType,
+  type CustomerSnapshot,
+  calculateOrderDiscountAndTotal,
+  normalizeOrder,
+} from '../models/Order.ts';
+import { storageService } from './storageService.ts';
+import { customerService } from './customerService.ts';
+import { getTodayString, removeVietnameseTones } from '../utils/formatters.ts';
 
 export interface CreateOrderInput {
-  customer: CustomerInfo;
   items: OrderItem[];
-  orderDate: string; // YYYY-MM-DD
-  deliveryDate: string; // YYYY-MM-DD
   discountType: DiscountType;
   discountValue: number;
-  discountNote?: string;
-  deposit?: number;
-  status: OrderStatus;
+  customer?: CustomerSnapshot;
+  customerName?: string;
+  phone?: string;
+  address?: string;
+  orderDate?: string; // YYYY-MM-DD
+  deliveryDate?: string; // YYYY-MM-DD
   note?: string;
+  deposit?: number;
+  status?: string;
+  discountNote?: string;
 }
 
-export type UpdateOrderInput = Partial<CreateOrderInput>;
+export type UpdateOrderInput = Partial<CreateOrderInput> & {
+  items?: OrderItem[];
+};
 
 export interface FilterOptions {
   searchQuery?: string;
-  status?: OrderStatus | 'all';
-  deliveryDate?: string;
   startDate?: string;
   endDate?: string;
-  sortBy?: 'delivery-soon' | 'newest' | 'oldest';
-}
-
-/**
- * Calculate financial totals with flexible discount modes
- */
-export function calculateOrderTotals(
-  items: OrderItem[],
-  discountType: DiscountType,
-  discountValue: number,
-  deposit: number = 0
-): { subtotal: number; discountAmount: number; total: number; remaining: number } {
-  const subtotal = items.reduce((sum, item) => {
-    const price =
-      item.customPrice !== undefined && item.customPrice >= 0
-        ? Number(item.customPrice)
-        : Number(item.originalPrice) || 0;
-    const qty = Math.max(1, Number(item.quantity) || 1);
-    return sum + qty * price;
-  }, 0);
-
-  let discountAmount = 0;
-  let finalTotal = subtotal;
-
-  if (discountType === 'amount') {
-    discountAmount = Math.max(0, Math.min(subtotal, Number(discountValue) || 0));
-    finalTotal = Math.max(0, subtotal - discountAmount);
-  } else if (discountType === 'percent') {
-    const pct = Math.max(0, Math.min(100, Number(discountValue) || 0));
-    discountAmount = Math.round((subtotal * pct) / 100);
-    finalTotal = Math.max(0, subtotal - discountAmount);
-  } else if (discountType === 'override') {
-    finalTotal = Math.max(0, Number(discountValue) || 0);
-    discountAmount = Math.max(0, subtotal - finalTotal);
-  }
-
-  const cleanDeposit = Math.max(0, Number(deposit) || 0);
-  const remaining = Math.max(0, finalTotal - cleanDeposit);
-
-  return {
-    subtotal,
-    discountAmount,
-    total: finalTotal,
-    remaining,
-  };
+  minAmount?: number;
+  maxAmount?: number;
+  sortBy?: 'newest' | 'oldest' | 'total-desc' | 'total-asc';
 }
 
 class OrderService {
@@ -109,52 +79,91 @@ class OrderService {
     return `ORD-${String(max + 1).padStart(4, '0')}`;
   }
 
+  /**
+   * Fast order recording: minimal actions, instant calculation
+   */
   public async addOrder(input: CreateOrderInput): Promise<Order> {
     await this.ensureLoaded();
 
-    const totals = calculateOrderTotals(
-      input.items,
+    if (!input.items || input.items.length === 0) {
+      throw new Error('Đơn hàng phải có ít nhất một sản phẩm.');
+    }
+
+    const items: OrderItem[] = input.items.map((it) => {
+      const qty = Math.max(1, Number(it.quantity) || 1);
+      const uPrice = Math.max(0, Number(it.unitPrice) || 0);
+      return {
+        productId: it.productId,
+        productName: it.productName.trim(),
+        unitPrice: uPrice,
+        quantity: qty,
+        lineTotal: qty * uPrice,
+        costPrice: it.costPrice !== undefined ? Math.max(0, Number(it.costPrice)) : undefined,
+      };
+    });
+
+    const subtotal = items.reduce((sum, it) => sum + it.lineTotal, 0);
+    const { discountAmount, finalTotal } = calculateOrderDiscountAndTotal(
+      subtotal,
       input.discountType,
-      input.discountValue,
-      input.deposit || 0
+      input.discountValue
     );
 
     const now = new Date().toISOString();
-    const newOrder: Order = {
+    const orderDate = input.orderDate || getTodayString();
+    const customerName = (input.customer?.name || input.customerName || '').trim() || 'Khách không xác định';
+    const phone = (input.customer?.phone || input.phone || '').trim();
+    const address = (input.customer?.address || input.address || '').trim();
+
+    // If customer name is provided, auto-link or save to customer directory
+    let customerId: string | undefined = input.customer?.id;
+    if (!customerId && customerName && customerName !== 'Khách không xác định') {
+      try {
+        const c = await customerService.findOrCreateCustomer(customerName, phone, address);
+        customerId = c.id;
+      } catch (err) {
+        console.warn('Could not auto-link customer:', err);
+      }
+    }
+
+    const rawOrder: Record<string, unknown> = {
       id: this.generateNextId(),
-      customer: {
-        name: (input.customer.name || 'Khách vãng lai').trim(),
-        phone: (input.customer.phone || '').trim(),
-        address: (input.customer.address || '').trim(),
-        note: (input.customer.note || '').trim(),
-      },
-      items: input.items.map((it) => ({
-        productId: it.productId,
-        productName: it.productName,
-        quantity: Math.max(1, Number(it.quantity) || 1),
-        originalPrice: Math.max(0, Number(it.originalPrice) || 0),
-        customPrice: it.customPrice !== undefined ? Math.max(0, Number(it.customPrice)) : undefined,
-      })),
-      orderDate: input.orderDate,
-      deliveryDate: input.deliveryDate,
-      subtotal: totals.subtotal,
-      discountType: input.discountType,
-      discountValue: Number(input.discountValue) || 0,
-      discountNote: (input.discountNote || '').trim(),
-      total: totals.total,
-      deposit: Math.max(0, Number(input.deposit) || 0),
-      remaining: totals.remaining,
-      status: input.status || 'pending',
-      note: (input.note || '').trim(),
+      orderDate,
+      deliveryDate: input.deliveryDate ? input.deliveryDate.trim() : undefined,
       createdAt: now,
       updatedAt: now,
+      customer: {
+        id: customerId,
+        name: customerName,
+        phone: phone || undefined,
+        address: address || undefined,
+      },
+      customerId,
+      customerName,
+      phone: phone || undefined,
+      address: address || undefined,
+      note: input.note ? input.note.trim() : undefined,
+      deposit: input.deposit !== undefined ? Number(input.deposit) : undefined,
+      status: input.status,
+      discountNote: input.discountNote,
+      items,
+      subtotal,
+      discountType: input.discountType,
+      discountValue: input.discountValue,
+      discountAmount,
+      finalTotal,
+      total: finalTotal,
     };
 
+    const newOrder = normalizeOrder(rawOrder);
     this.orders.unshift(newOrder);
     await storageService.saveOrders(this.orders);
     return newOrder;
   }
 
+  /**
+   * Update an existing order at any time
+   */
   public async updateOrder(id: string, input: UpdateOrderInput): Promise<Order> {
     await this.ensureLoaded();
 
@@ -164,38 +173,72 @@ class OrderService {
     }
 
     const existing = this.orders[index];
-    const items = input.items || existing.items;
+    const items = (input.items || existing.items).map((it) => {
+      const qty = Math.max(1, Number(it.quantity) || 1);
+      const uPrice = Math.max(0, Number(it.unitPrice) || 0);
+      return {
+        productId: it.productId,
+        productName: it.productName.trim(),
+        unitPrice: uPrice,
+        quantity: qty,
+        lineTotal: qty * uPrice,
+        costPrice: it.costPrice !== undefined ? Math.max(0, Number(it.costPrice)) : undefined,
+      };
+    });
+
+    const subtotal = items.reduce((sum, it) => sum + it.lineTotal, 0);
     const discountType = input.discountType || existing.discountType;
     const discountValue = input.discountValue !== undefined ? input.discountValue : existing.discountValue;
-    const deposit = input.deposit !== undefined ? input.deposit : existing.deposit;
 
-    const totals = calculateOrderTotals(items, discountType, discountValue, deposit);
+    const { discountAmount, finalTotal } = calculateOrderDiscountAndTotal(
+      subtotal,
+      discountType,
+      discountValue
+    );
 
-    const updated: Order = {
+    const customerName = input.customer?.name !== undefined ? (input.customer.name.trim() || 'Khách không xác định') : (input.customerName !== undefined ? (input.customerName.trim() || 'Khách không xác định') : existing.customerName);
+    const phone = input.customer?.phone !== undefined ? input.customer.phone.trim() : (input.phone !== undefined ? input.phone.trim() : existing.phone);
+    const address = input.customer?.address !== undefined ? input.customer.address.trim() : (input.address !== undefined ? input.address.trim() : existing.address);
+
+    let customerId = input.customer?.id || existing.customerId;
+    if (!customerId && customerName && customerName !== 'Khách không xác định') {
+      try {
+        const c = await customerService.findOrCreateCustomer(customerName, phone, address);
+        customerId = c.id;
+      } catch (err) {
+        console.warn('Could not auto-link customer:', err);
+      }
+    }
+
+    const rawOrder: Record<string, unknown> = {
       ...existing,
-      customer: input.customer
-        ? {
-            name: (input.customer.name || existing.customer.name).trim(),
-            phone: (input.customer.phone ?? existing.customer.phone ?? '').trim(),
-            address: (input.customer.address ?? existing.customer.address ?? '').trim(),
-            note: (input.customer.note ?? existing.customer.note ?? '').trim(),
-          }
-        : existing.customer,
-      items,
       orderDate: input.orderDate || existing.orderDate,
-      deliveryDate: input.deliveryDate || existing.deliveryDate,
-      subtotal: totals.subtotal,
+      deliveryDate: input.deliveryDate !== undefined ? (input.deliveryDate.trim() || undefined) : existing.deliveryDate,
+      customer: {
+        id: customerId,
+        name: customerName,
+        phone: phone || undefined,
+        address: address || undefined,
+      },
+      customerId,
+      customerName,
+      phone: phone || undefined,
+      address: address || undefined,
+      note: input.note !== undefined ? (input.note.trim() || undefined) : existing.note,
+      deposit: input.deposit !== undefined ? Number(input.deposit) : existing.deposit,
+      status: input.status !== undefined ? input.status : existing.status,
+      discountNote: input.discountNote !== undefined ? input.discountNote : existing.discountNote,
+      items,
+      subtotal,
       discountType,
       discountValue,
-      discountNote: input.discountNote !== undefined ? input.discountNote.trim() : existing.discountNote,
-      total: totals.total,
-      deposit,
-      remaining: totals.remaining,
-      status: input.status || existing.status,
-      note: input.note !== undefined ? input.note.trim() : existing.note,
+      discountAmount,
+      finalTotal,
+      total: finalTotal,
       updatedAt: new Date().toISOString(),
     };
 
+    const updated = normalizeOrder(rawOrder, index);
     this.orders[index] = updated;
     await storageService.saveOrders(this.orders);
     return updated;
@@ -213,84 +256,98 @@ class OrderService {
   }
 
   /**
-   * Filter and search orders
+   * Search and filter orders with Vietnamese unaccented search
    */
   public filterOrders(options: FilterOptions): Order[] {
     let result = [...this.orders];
 
     if (options.searchQuery && options.searchQuery.trim()) {
-      const q = options.searchQuery.trim().toLowerCase();
-      result = result.filter(
-        (o) =>
-          o.id.toLowerCase().includes(q) ||
-          o.customer.name.toLowerCase().includes(q) ||
-          (o.customer.phone && o.customer.phone.includes(q)) ||
-          o.items.some((it) => it.productName.toLowerCase().includes(q))
-      );
-    }
+      const qClean = removeVietnameseTones(options.searchQuery.trim());
+      const digitsOnly = options.searchQuery.replace(/\D/g, '');
 
-    if (options.status && options.status !== 'all') {
-      result = result.filter((o) => o.status === options.status);
-    }
+      result = result.filter((o) => {
+        const idMatches = o.id.toLowerCase().includes(qClean);
+        const nameMatches = removeVietnameseTones(o.customerName).includes(qClean);
+        const phoneMatches = digitsOnly.length >= 3 && o.phone && o.phone.replace(/\D/g, '').includes(digitsOnly);
+        const productMatches = o.items.some((it) => removeVietnameseTones(it.productName).includes(qClean));
+        const noteMatches = o.note && removeVietnameseTones(o.note).includes(qClean);
 
-    if (options.deliveryDate) {
-      result = result.filter((o) => o.deliveryDate === options.deliveryDate);
+        return idMatches || nameMatches || phoneMatches || productMatches || noteMatches;
+      });
     }
 
     if (options.startDate) {
-      result = result.filter((o) => o.deliveryDate >= options.startDate!);
+      result = result.filter((o) => o.orderDate >= options.startDate!);
     }
     if (options.endDate) {
-      result = result.filter((o) => o.deliveryDate <= options.endDate!);
+      result = result.filter((o) => o.orderDate <= options.endDate!);
     }
 
-    const sortBy = options.sortBy || 'delivery-soon';
+    if (options.minAmount !== undefined) {
+      result = result.filter((o) => o.finalTotal >= options.minAmount!);
+    }
+    if (options.maxAmount !== undefined) {
+      result = result.filter((o) => o.finalTotal <= options.maxAmount!);
+    }
+
+    const sortBy = options.sortBy || 'newest';
     result.sort((a, b) => {
-      if (sortBy === 'delivery-soon') {
-        return a.deliveryDate.localeCompare(b.deliveryDate) || b.createdAt.localeCompare(a.createdAt);
-      } else if (sortBy === 'newest') {
-        return b.createdAt.localeCompare(a.createdAt);
-      } else {
-        return a.createdAt.localeCompare(b.createdAt);
+      if (sortBy === 'newest') {
+        return b.orderDate.localeCompare(a.orderDate) || b.createdAt.localeCompare(a.createdAt);
       }
+      if (sortBy === 'oldest') {
+        return a.orderDate.localeCompare(b.orderDate) || a.createdAt.localeCompare(b.createdAt);
+      }
+      if (sortBy === 'total-desc') {
+        return b.finalTotal - a.finalTotal;
+      }
+      if (sortBy === 'total-asc') {
+        return a.finalTotal - b.finalTotal;
+      }
+      return 0;
     });
 
     return result;
   }
 
-  /**
-   * Get total mooncake quantities sold grouped by flavor/filling
-   */
-  public getMooncakeFillingStats(): Array<{ productName: string; quantity: number; totalAmount: number }> {
-    const stats: Record<string, { quantity: number; totalAmount: number }> = {};
-
-    for (const order of this.orders) {
-      if (order.status === 'cancelled') continue;
-
-      for (const it of order.items) {
-        if (!stats[it.productName]) {
-          stats[it.productName] = { quantity: 0, totalAmount: 0 };
-        }
-        const effectivePrice = it.customPrice !== undefined ? it.customPrice : it.originalPrice;
-        stats[it.productName].quantity += it.quantity;
-        stats[it.productName].totalAmount += it.quantity * effectivePrice;
-      }
-    }
-
-    return Object.entries(stats)
-      .map(([productName, data]) => ({
-        productName,
-        quantity: data.quantity,
-        totalAmount: data.totalAmount,
-      }))
-      .sort((a, b) => b.quantity - a.quantity);
-  }
-
   public async replaceAllOrders(newOrders: Order[]): Promise<void> {
-    this.orders = [...newOrders];
+    this.orders = newOrders.map((o, idx) => normalizeOrder(o as unknown as Record<string, unknown>, idx));
     this.isInitialized = true;
     await storageService.saveOrders(this.orders);
   }
 }
 
 export const orderService = new OrderService();
+
+/**
+ * Calculate totals and remaining balance for order items
+ */
+export function calculateOrderTotals(
+  items: OrderItem[],
+  discountType: DiscountType = 'none',
+  discountValue = 0,
+  deposit = 0
+): {
+  subtotal: number;
+  discountAmount: number;
+  total: number;
+  finalTotal: number;
+  remaining: number;
+} {
+  const subtotal = items.reduce((sum, it) => {
+    const price = (it.customPrice !== undefined && it.customPrice >= 0 ? it.customPrice : it.originalPrice) ?? it.unitPrice ?? 0;
+    const qty = Math.max(1, it.quantity || 1);
+    return sum + price * qty;
+  }, 0);
+
+  const { discountAmount, finalTotal } = calculateOrderDiscountAndTotal(subtotal, discountType, discountValue);
+  const remaining = Math.max(0, finalTotal - (deposit || 0));
+
+  return {
+    subtotal,
+    discountAmount,
+    total: finalTotal,
+    finalTotal,
+    remaining,
+  };
+}
